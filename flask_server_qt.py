@@ -377,7 +377,12 @@ if __name__ == "__main__":
     subs_db_path = os.path.join(DEFAULT_DATA_DIR, "subscriptions_qt.db")
 
     bidder_manager = BidderManager(bidders_db_path, subs_db_path)
-    stripe_service = StripeService()
+    stripe_service = StripeService(
+        stripe_secret_key=cfg.get("STRIPE_SECRET_KEY", ""),
+        webhook_secret=cfg.get("STRIPE_WEBHOOK_SECRET", ""),
+        db_manager=bidder_manager,
+        api_token=cfg.get("API_TOKEN", "")
+    )
 
     server = FlaskServer(
         port=port,
