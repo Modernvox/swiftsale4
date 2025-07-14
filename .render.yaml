@@ -3,10 +3,11 @@ services:
     name: swiftsale4
     env: python
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.13.4
       - key: PORT
         value: 10000
     buildCommand: pip install -r requirements.txt
     startCommand: python3 flask_server_qt.py
     plan: free
+    build:
+      environment:
+        pythonVersion: 3.11
