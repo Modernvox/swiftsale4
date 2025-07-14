@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SwiftSale</title>
+    <script src="https://js.stripe.com/v3/"></script>
+    <script>
+        const stripe = Stripe('{{ stripe_publishable_key }}');
+        function initiateCheckout(tier, email) {
+            fetch('/create-checkout-session', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer {{ api_token }}'
+                },
+                body: JSON.stringify({ tier: tier, user_email: email })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.url) {
+                    window.location.href = data.url;
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+    <h1>SwiftSale Dashboard</h1>
+    <p>Latest Bin Assignment: <span id="latest-bin"></span></p>
+    <button onclick="initiateCheckout('Bronze', 'test@example.com')">Upgrade to Bronze</button>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+    <script>
+        const socket = io({ transports: ['polling'] });
+        socket.on('update', function(data) {
+            document.getElementById('latest-bin').textContent = data.data;
+        });
+    </script>
+</body>
+</html>
