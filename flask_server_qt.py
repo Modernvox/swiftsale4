@@ -373,6 +373,9 @@ if __name__ == "__main__":
     cfg = load_config()
     port = int(cfg.get("PORT", 10000))
 
+    bidders_db_path = os.path.join(DEFAULT_DATA_DIR, "bidders_qt.db")
+    subs_db_path = os.path.join(DEFAULT_DATA_DIR, "subscriptions_qt.db")
+
     bidder_manager = BidderManager()
     stripe_service = StripeService()
 
