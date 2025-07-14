@@ -3,8 +3,9 @@ import os
 import socket
 import logging
 import traceback
+import uuid
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, g
 from flask_socketio import SocketIO
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -20,61 +21,110 @@ import hashlib
 from urllib.parse import urlparse
 import psycopg2
 from datetime import datetime
+import re
 
 ASYNC_MODE = "threading"
+
+# Helper functions for JSON responses
+def json_success(data=None, status=200):
+    """Return a successful JSON response."""
+    response = {"status": "success"}
+    if data is not None:
+        response.update(data)
+    return jsonify(response), status
+
+def json_error(message, status=400):
+    """Return an error JSON response."""
+    return jsonify({"status": "error", "error": message}), status
+
+def get_db_connection():
+    """Centralized database connection helper with fallback between DATABASE_URL and CLOUD_DB_*."""
+    try:
+        if os.getenv("RENDER") == "true" and os.getenv("DATABASE_URL"):
+            parsed_url = urlparse(os.getenv("DATABASE_URL"))
+            return psycopg2.connect(
+                dbname=parsed_url.path[1:],
+                user=parsed_url.username,
+                password=parsed_url.password,
+                host=parsed_url.hostname,
+                port=parsed_url.port
+            )
+        return psycopg2.connect(
+            dbname=os.getenv("CLOUD_DB_NAME", "swiftsale"),
+            user=os.getenv("CLOUD_DB_USER", "admin"),
+            password=os.getenv("CLOUD_DB_PASSWORD", "password"),
+            host=os.getenv("CLOUD_DB_HOST", "localhost"),
+            port=os.getenv("CLOUD_DB_PORT", "5432")
+        )
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Database connection error: {e}", exc_info=True)
+        raise
 
 class FlaskServer:
     def __init__(self, port, stripe_service, api_token: str,
                  latest_bin_assignment_callback, secret_key: str,
                  log_info, log_error, user_data_dir=None,
                  bidder_manager=None, telegram_service=None):
-        if user_data_dir is None:
-            user_data_dir = os.getenv("RENDER_DATA_DIR", "/opt/render/project/swiftsale_data")
-            if os.getenv("RENDER") == "true":
-                user_data_dir = "/opt/render/project/swiftsale_data"
-            else:
-                user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
+        # Load environment variables with safe fallbacks
+        self.env = os.getenv("FLASK_ENV", "development").lower()
+        self.port = int(os.getenv("PORT", port))
+        self.api_token = os.getenv("API_TOKEN", api_token)
+        self.secret_key = os.getenv("SECRET_KEY", secret_key)
+        user_data_dir = os.getenv("RENDER_DATA_DIR", "/opt/render/project/swiftsale_data" if os.getenv("RENDER") == "true" else
+                                 os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp'))
+
+        # Ensure user data directory exists
         os.makedirs(user_data_dir, exist_ok=True)
         log_file = os.path.join(user_data_dir, "swiftsale_flask_server.log")
 
+        # Configure logging
         logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s [%(levelname)s] %(message)s",
+            level=logging.DEBUG if self.env == "development" else logging.INFO,
+            format="%(asctime)s [%(levelname)s] [RequestID: %(request_id)s] %(message)s",
             handlers=[
                 RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5),
                 logging.StreamHandler(sys.stdout)
             ]
         )
-        logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__)
 
         self.log_info = log_info
         self.log_error = log_error
-        self.port = port
         self.stripe_service = stripe_service
-        self.api_token = api_token
         self.latest_bin_assignment_callback = latest_bin_assignment_callback
-        self.env = os.environ.get('FLASK_ENV', 'development').lower()
-
-        template_dir = get_resource_path("templates")
-        static_dir = get_resource_path("static")
-
         self.bidder_manager = bidder_manager
         self.telegram_service = telegram_service
 
+        # Initialize Flask app
+        template_dir = get_resource_path("templates")
+        static_dir = get_resource_path("static")
         self.app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
-        self.app.config['SECRET_KEY'] = secret_key
+        self.app.config['SECRET_KEY'] = self.secret_key
 
-        self.limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
+        # Initialize rate limiter
+        self.limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("LIMITER_STORAGE_URI", "memory://"))
         self.limiter.init_app(self.app)
 
-        cors_origins = [f"http://localhost:{port}"] if self.env == 'production' else "*"
+        # Initialize SocketIO
+        cors_origins = os.getenv("CORS_ORIGINS", f"http://localhost:{self.port}" if self.env == "production" else "*")
         transports = ["polling", "websocket"]
         self.socketio = SocketIO(self.app, cors_allowed_origins=cors_origins, async_mode=ASYNC_MODE, transports=transports)
 
+        # Register routes and error handlers
         self._register_routes()
         self._register_socketio_events()
+        self._register_error_handlers()
+
+    def _register_error_handlers(self):
+        """Centralized error handler for logging full tracebacks."""
+        @self.app.errorhandler(Exception)
+        def handle_error(error):
+            request_id = getattr(g, 'request_id', 'unknown')
+            self.logger.error(f"Unhandled error [RequestID: {request_id}]: {str(error)}", exc_info=True)
+            return json_error("Internal server error", 500)
 
     def _get_ngrok_path(self) -> str:
+        """Retrieve or download ngrok executable (not used in Render)."""
         if os.getenv("RENDER") == "true":
             raise RuntimeError("ngrok is not used in Render environment")
         base = get_resource_path("")
@@ -83,7 +133,7 @@ class FlaskServer:
             if not os.access(ngrok_local, os.X_OK):
                 raise PermissionError(f"ngrok.exe at {ngrok_local} is not executable")
             return ngrok_local
-        url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+        url = os.getenv("NGROK_URL", "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip")
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
@@ -91,164 +141,225 @@ class FlaskServer:
         return ngrok_local
 
     def start(self):
-        self.log_info("Starting Flask server")
-        port = int(os.getenv("PORT", 10000))
-        serve(self.app, host="0.0.0.0", port=port, threads=8)
+        """Start the Flask server using Waitress."""
+        self.logger.info(f"Starting Flask server on port {self.port}")
+        serve(self.app, host="0.0.0.0", port=self.port, threads=8)
 
     def _register_routes(self):
-        @self.app.route('/health')
+        """Register all Flask routes with proper logging and documentation."""
+
+        @self.app.before_request
+        def before_request():
+            """Inject request_id and timestamp, log request start."""
+            g.request_id = str(uuid.uuid4())
+            g.start_time = datetime.utcnow()
+            self.logger.info(f"Request started: {request.method} {request.path} [RequestID: {g.request_id}]",
+                             extra={"request_id": g.request_id})
+
+        @self.app.after_request
+        def after_request(response):
+            """Log request completion with status and duration."""
+            duration = (datetime.utcnow() - g.start_time).total_seconds() * 1000  # ms
+            self.logger.info(
+                f"Request completed: {request.method} {request.path} [Status: {response.status_code}] [Duration: {duration:.2f}ms]",
+                extra={"request_id": g.request_id}
+            )
+            return response
+
+        @self.app.route('/health', methods=['GET'])
         def health():
-            return jsonify(status="ok"), 200
+            """Health check endpoint.
 
-        @self.app.route('/env-check')
+            Returns:
+                JSON: {"status": "ok"} with HTTP 200.
+            """
+            return json_success(status=200)
+
+        @self.app.route('/env-check', methods=['GET'])
         def env_check():
-            stripe_mode = "live" if self.env == "production" else "test"
-            return jsonify({
-                "stripe_mode": stripe_mode,
-                "flask_env": self.env
-            }), 200
+            """Environment check endpoint.
 
-        @self.app.route('/')
+            Returns:
+                JSON: Environment details (stripe_mode, flask_env) with HTTP 200.
+            """
+            stripe_mode = "live" if self.env == "production" else "test"
+            return json_success({"stripe_mode": stripe_mode, "flask_env": self.env}, 200)
+
+        @self.app.route('/', methods=['GET'])
         def index():
+            """Serve the main index.html page.
+
+            Returns:
+                HTML: Rendered index.html template.
+            """
             return render_template("index.html")
 
         @self.app.route('/create-checkout-session', methods=['POST'])
         def create_checkout_session():
+            """Create a Stripe checkout session.
+
+            Input (JSON):
+                - tier (str): Subscription tier.
+                - user_email (str): User's email address.
+
+            Returns:
+                JSON: Checkout session details on success (HTTP 200).
+                JSON: {"error": "message"} on failure (HTTP 400 or 500).
+            """
             data = request.get_json() or {}
             tier = data.get('tier')
             user_email = data.get('user_email')
             if not tier or not user_email:
-                return jsonify(error="Missing tier or user_email"), 400
+                return json_error("Missing tier or user_email", 400)
             try:
                 session, status = self.stripe_service.create_checkout_session(tier, user_email, request.url_root)
-                return jsonify(session), status
+                return json_success(session, status)
             except Exception as e:
-                logging.getLogger(__name__).error(f"Stripe session error: {e}", exc_info=True)
-                return jsonify(error=str(e)), 500
+                self.logger.error(f"Stripe session error: {e}", exc_info=True, extra={"request_id": g.request_id})
+                return json_error(str(e), 500)
 
-        @self.app.route('/subscription-status')
+        @self.app.route('/subscription-status', methods=['GET'])
         def subscription_status():
+            """Retrieve subscription status for a user.
+
+            Input (Query Params):
+                - email (str): User's email address.
+
+            Returns:
+                JSON: {"tier": str, "status bulan": str, "next_billing_date": str} on success (HTTP 200).
+                JSON: {"error": "message"} on failure (HTTP 400 or 500).
+            """
             email = request.args.get('email')
             if not email:
-                return jsonify(error="Missing email"), 400
+                return json_error("Missing email", 400)
             try:
                 tier = self.stripe_service.db_manager.get_user_tier(email)
                 license_key = self.stripe_service.db_manager.get_user_license_key(email)
-                if license_key:
-                    status, next_billing_date = self.stripe_service.get_subscription_status(license_key)
-                else:
-                    status, next_billing_date = "N/A", "N/A"
-                return jsonify({"tier": tier or "Trial", "status": status, "next_billing_date": next_billing_date}), 200
+                status, next_billing_date = self.stripe_service.get_subscription_status(license_key) if license_key else ("N/A", "N/A")
+                return json_success({"tier": tier or "Trial", "status": status, "next_billing_date": next_billing_date}, 200)
             except Exception as e:
-                logging.getLogger(__name__).error(f"Subscription status error for {email}: {e}", exc_info=True)
-                return jsonify(error=str(e)), 500
+                self.logger.error(f"Subscription status error for {email}: {e}", exc_info=True, extra={"request_id": g.request_id})
+                return json_error(str(e), 500)
 
         @self.app.route('/stripe/webhook', methods=['POST'])
         def stripe_webhook():
+            """Handle Stripe webhook events.
+
+            Input:
+                - Body: Raw webhook payload.
+                - Stripe-Signature (header): Webhook signature for verification.
+
+            Returns:
+                JSON or str: Response from StripeService or empty string.
+                JSON: {"error": "message"} on failure (HTTP 400 or 500).
+            """
             try:
                 payload = request.get_data(cache=False)
                 sig_header = request.headers.get('Stripe-Signature')
                 if not payload or not sig_header:
-                    logging.error("Webhook missing payload or signature header")
-                    return jsonify({"error": "Missing signature or payload"}), 400
+                    self.logger.error("Webhook missing payload or signature header", extra={"request_id": g.request_id})
+                    return json_error("Missing signature or payload", 400)
                 status_code, response = self.stripe_service.handle_webhook(payload, sig_header)
                 if isinstance(response, dict):
-                    return jsonify(response), status_code
-                elif isinstance(response, str):
-                    return response, status_code
-                else:
-                    return "", status_code
+                    return json_success(response, status_code)
+                return response, status_code
             except Exception as e:
-                logging.error(f"Webhook endpoint error: {e}", exc_info=True)
-                return jsonify({"error": "Webhook endpoint failure"}), 500
+                self.logger.error(f"Webhook endpoint error: {e}", exc_info=True, extra={"request_id": g.request_id})
+                return json_error("Webhook endpoint failure", 500)
 
         @self.app.route('/register-install', methods=['POST'])
         def register_install():
+            """Register a new installation for a user.
+
+            Input (JSON):
+                - email (str): User's email address.
+
+            Returns:
+                JSON: {"install_id": str, "tier": str} on success (HTTP 200).
+                JSON: {"error": "message"} on failure (HTTP 400 or 500).
+            """
             try:
                 data = request.get_json() or {}
-                if not data or 'email' not in data:
-                    return jsonify({"error": "Email is required"}), 400
+                email = data.get('email')
+                if not email:
+                    return json_error("Email is required", 400)
 
-                email = data['email'].strip().lower()
-                if '@' not in email:
-                    return jsonify({"error": "Invalid email address"}), 400
+                # Validate and normalize email
+                email = email.strip().lower()
+                if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+                    return json_error("Invalid email address", 400)
 
                 hashed_email = hashlib.sha256(email.encode()).hexdigest()
-                existing_install = self.stripe_service.db_manager.get_install_by_hashed_email(hashed_email)
-                if existing_install:
-                    return jsonify({
-                        "install_id": existing_install['install_id'],
-                        "tier": existing_install['tier']
-                    }), 200
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Check for existing install
+                        cur.execute("SELECT install_id, tier FROM installs WHERE hashed_email = %s", (hashed_email,))
+                        existing_install = cur.fetchone()
+                        if existing_install:
+                            self.logger.info(f"Existing install found for hashed_email: {hashed_email}",
+                                             extra={"request_id": g.request_id})
+                            return json_success({"install_id": existing_install[0], "tier": existing_install[1]}, 200)
 
-                last_install = self.stripe_service.db_manager.get_last_install()
-                if last_install:
-                    last_id = int(last_install['install_id'])
-                    new_id = f"{last_id + 1:07d}"
-                else:
-                    new_id = "0000001"
+                        # Generate new install ID
+                        cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
+                        last_install = cur.fetchone()
+                        new_id = f"{int(last_install[0]) + 1:07d}" if last_install else "0000001"
 
-                self.stripe_service.db_manager.save_install({
-                    "hashed_email": hashed_email,
-                    "install_id": new_id,
-                    "tier": "free"
-                })
+                        # Save new install
+                        cur.execute(
+                            "INSERT INTO installs (hashed_email, install_id, tier) VALUES (%s, %s, %s)",
+                            (hashed_email, new_id, "free")
+                        )
+                        conn.commit()
 
-                return jsonify({
-                    "install_id": new_id,
-                    "tier": "free"
-                }), 200
+                self.logger.info(f"New install registered: {new_id} for hashed_email: {hashed_email}",
+                                 extra={"request_id": g.request_id})
+                return json_success({"install_id": new_id, "tier": "free"}, 200)
 
             except Exception as e:
-                logging.getLogger(__name__).error(f"Error registering install: {e}", exc_info=True)
-                return jsonify({"error": "Internal server error"}), 500
+                self.logger.error(f"Error registering install: {e}", exc_info=True, extra={"request_id": g.request_id})
+                return json_error("Internal server error", 500)
 
-        @self.app.route('/api/validate-dev-code')
+        @self.app.route('/api/validate-dev-code', methods=['GET'])
         def validate_dev_code():
+            """Validate a developer code.
+
+            Input (Query Params):
+                - code (str): Developer code to validate.
+
+            Returns:
+                JSON: {"valid": bool, "email": str} on success (HTTP 200).
+                JSON: {"valid": false, "error": "message"} on failure (HTTP 400, 403, 404, or 500).
+            """
             code = request.args.get("code")
             if not code:
-                return jsonify({"valid": False, "error": "Missing code"}), 400
+                return json_error("Missing code", 400)
             try:
-                database_url = os.getenv("DATABASE_URL")
-                if database_url and os.getenv("RENDER") == "true":
-                    parsed_url = urlparse(database_url)
-                    conn = psycopg2.connect(
-                        dbname=parsed_url.path[1:],
-                        user=parsed_url.username,
-                        password=parsed_url.password,
-                        host=parsed_url.hostname,
-                        port=parsed_url.port
-                    )
-                else:
-                    conn = psycopg2.connect(
-                        dbname=os.getenv("CLOUD_DB_NAME"),
-                        user=os.getenv("CLOUD_DB_USER"),
-                        password=os.getenv("CLOUD_DB_PASSWORD"),
-                        host=os.getenv("CLOUD_DB_HOST"),
-                        port=os.getenv("CLOUD_DB_PORT", "5432")
-                    )
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT email, expires_at, used FROM dev_codes
-                        WHERE code = %s
-                    """, (code,))
-                    row = cur.fetchone()
-                    if not row:
-                        return jsonify({"valid": False, "error": "Invalid code"}), 404
-                    email, expires_at, used = row
-                    if used:
-                        return jsonify({"valid": False, "error": "Code already used"}), 403
-                    if expires_at and datetime.utcnow() > expires_at:
-                        return jsonify({"valid": False, "error": "Code expired"}), 403
-                    return jsonify({"valid": True, "email": email}), 200
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT email, expires_at, used FROM dev_codes
+                            WHERE code = %s
+                        """, (code,))
+                        row = cur.fetchone()
+                        if not row:
+                            return json_error("Invalid code", 404)
+                        email, expires_at, used = row
+                        if used:
+                            return json_error("Code already used", 403)
+                        if expires_at and datetime.utcnow() > expires_at:
+                            return json_error("Code expired", 403)
+                        return json_success({"valid": True, "email": email}, 200)
             except Exception as e:
-                logging.getLogger(__name__).error(f"Dev code validation error: {e}", exc_info=True)
-                return jsonify({"valid": False, "error": "Server error"}), 500
+                self.logger.error(f"Dev code validation error: {e}", exc_info=True, extra={"request_id": g.request_id})
+                return json_error("Server error", 500)
 
     def _register_socketio_events(self):
+        """Register SocketIO events."""
         @self.socketio.on('connect')
         def on_connect():
-            self.log_info("Client connected via SocketIO")
+            self.logger.info("Client connected via SocketIO", extra={"request_id": getattr(g, 'request_id', 'unknown')})
 
     def shutdown(self):
-        self.log_info("Shutting down Flask server")
+        """Shutdown the Flask server."""
+        self.logger.info("Shutting down Flask server")
