@@ -11,12 +11,15 @@ from flask_limiter.util import get_remote_address
 from waitress import serve
 from config_qt import PRICE_MAP, REVERSE_PRICE_MAP, TIER_LIMITS, load_config, get_resource_path
 from stripe_service_qt import StripeService
-from bidder_manager_qt import BidderManager  # Use BidderManager directly
+from bidder_manager_qt import BidderManager
 import stripe
 import zipfile
 import io
 import requests
 import hashlib
+from urllib.parse import urlparse
+import psycopg2
+from datetime import datetime
 
 ASYNC_MODE = "threading"
 
@@ -26,7 +29,11 @@ class FlaskServer:
                  log_info, log_error, user_data_dir=None,
                  bidder_manager=None, telegram_service=None):
         if user_data_dir is None:
-            user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
+            user_data_dir = os.getenv("RENDER_DATA_DIR", "/opt/render/project/swiftsale_data")
+            if os.getenv("RENDER") == "true":
+                user_data_dir = "/opt/render/project/swiftsale_data"
+            else:
+                user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
         os.makedirs(user_data_dir, exist_ok=True)
         log_file = os.path.join(user_data_dir, "swiftsale_flask_server.log")
 
@@ -68,19 +75,25 @@ class FlaskServer:
         self._register_socketio_events()
 
     def _get_ngrok_path(self) -> str:
+        if os.getenv("RENDER") == "true":
+            raise RuntimeError("ngrok is not used in Render environment")
         base = get_resource_path("")
         ngrok_local = os.path.join(base, "ngrok.exe")
         if os.path.isfile(ngrok_local):
             if not os.access(ngrok_local, os.X_OK):
                 raise PermissionError(f"ngrok.exe at {ngrok_local} is not executable")
             return ngrok_local
-
         url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         zf = zipfile.ZipFile(io.BytesIO(resp.content))
         zf.extract("ngrok.exe", base)
         return ngrok_local
+
+    def start(self):
+        self.log_info("Starting Flask server")
+        port = int(os.getenv("PORT", 10000))
+        serve(self.app, host="0.0.0.0", port=port, threads=8)
 
     def _register_routes(self):
         @self.app.route('/health')
@@ -151,7 +164,6 @@ class FlaskServer:
 
         @self.app.route('/register-install', methods=['POST'])
         def register_install():
-            """Handle install registration and return install_id and tier."""
             try:
                 data = request.get_json() or {}
                 if not data or 'email' not in data:
@@ -172,7 +184,7 @@ class FlaskServer:
                 last_install = self.stripe_service.db_manager.get_last_install()
                 if last_install:
                     last_id = int(last_install['install_id'])
-                    new_id = f"{last_id + 1:07d}"  # Pad with zeros to 7 digits
+                    new_id = f"{last_id + 1:07d}"
                 else:
                     new_id = "0000001"
 
@@ -193,19 +205,28 @@ class FlaskServer:
 
         @self.app.route('/api/validate-dev-code')
         def validate_dev_code():
-            import psycopg2
-            from datetime import datetime
             code = request.args.get("code")
             if not code:
                 return jsonify({"valid": False, "error": "Missing code"}), 400
             try:
-                conn = psycopg2.connect(
-                    dbname=os.getenv("CLOUD_DB_NAME"),
-                    user=os.getenv("CLOUD_DB_USER"),
-                    password=os.getenv("CLOUD_DB_PASSWORD"),
-                    host=os.getenv("CLOUD_DB_HOST"),
-                    port=os.getenv("CLOUD_DB_PORT", "5432")
-                )
+                database_url = os.getenv("DATABASE_URL")
+                if database_url and os.getenv("RENDER") == "true":
+                    parsed_url = urlparse(database_url)
+                    conn = psycopg2.connect(
+                        dbname=parsed_url.path[1:],
+                        user=parsed_url.username,
+                        password=parsed_url.password,
+                        host=parsed_url.hostname,
+                        port=parsed_url.port
+                    )
+                else:
+                    conn = psycopg2.connect(
+                        dbname=os.getenv("CLOUD_DB_NAME"),
+                        user=os.getenv("CLOUD_DB_USER"),
+                        password=os.getenv("CLOUD_DB_PASSWORD"),
+                        host=os.getenv("CLOUD_DB_HOST"),
+                        port=os.getenv("CLOUD_DB_PORT", "5432")
+                    )
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT email, expires_at, used FROM dev_codes
@@ -228,12 +249,6 @@ class FlaskServer:
         @self.socketio.on('connect')
         def on_connect():
             self.log_info("Client connected via SocketIO")
-
-    def start(self):
-        self.log_info("Starting Flask server")
-        ngrok_path = self._get_ngrok_path()
-        self.log_info(f"Using ngrok from: {ngrok_path}")
-        serve(self.app, host="127.0.0.1", port=self.port, threads=8)
 
     def shutdown(self):
         self.log_info("Shutting down Flask server")
