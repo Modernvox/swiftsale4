@@ -256,7 +256,7 @@ def main():
         api_token=config["API_TOKEN"],
         user_email=config.get("USER_EMAIL", ""),
         base_url=config["APP_BASE_URL"],
-        dev_unlock_code=config.get("DEV_OVERRIDE_SECRET", ""),
+        dev_unlock_code = config.get("DEV_UNLOCK_CODE", ""),
         telegram_bot_token=config.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=config.get("TELEGRAM_CHAT_ID", ""),
         dev_access_granted=False,
