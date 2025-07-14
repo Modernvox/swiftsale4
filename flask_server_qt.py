@@ -368,7 +368,7 @@ class FlaskServer:
 if __name__ == "__main__":
     from stripe_service_qt import StripeService
     from bidder_manager_qt import BidderManager
-    from config_qt import load_config
+    from config_qt import load_config, DEFAULT_DATA_DIR  # <-- FIXED LINE
 
     cfg = load_config()
     port = int(cfg.get("PORT", 10000))
@@ -376,7 +376,7 @@ if __name__ == "__main__":
     bidders_db_path = os.path.join(DEFAULT_DATA_DIR, "bidders_qt.db")
     subs_db_path = os.path.join(DEFAULT_DATA_DIR, "subscriptions_qt.db")
 
-    bidder_manager = BidderManager()
+    bidder_manager = BidderManager(bidders_db_path, subs_db_path)
     stripe_service = StripeService()
 
     server = FlaskServer(
