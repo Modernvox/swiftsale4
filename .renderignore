@@ -1,0 +1,4 @@
+mix.exs
+deps/
+_build/
+*.beam
