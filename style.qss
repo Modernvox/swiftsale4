@@ -1,0 +1,80 @@
+
+/* Base background and font color settings */
+QMainWindow {
+    background-color: #1a1a1a;
+}
+
+QLabel, QGroupBox, QFrame {
+    background-color: transparent;
+    color: #f0f0f0;
+}
+
+/* Line edits and text edits */
+QLineEdit, QTextEdit {
+    background-color: #2a2a2a;
+    color: #f0f0f0;
+    border: 1px solid #555;
+    border-radius: 4px;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border: 1px solid #444;
+    padding: 5px 10px;
+    border-radius: 5px;
+}
+
+QPushButton:hover {
+    background-color: #3a3a3a;
+}
+
+QPushButton#danger {
+    background-color: #a63c3c;
+    color: white;
+}
+
+QPushButton#green {
+    background-color: #2e8b57;
+    color: white;
+}
+
+/* Checkboxes */
+QCheckBox {
+    color: #f0f0f0;
+}
+
+/* Table widget styling */
+QTableWidget {
+    background-color: #1e1e1e;
+    color: #ffffff;
+    gridline-color: #555;
+}
+
+/* Table headers */
+QHeaderView::section {
+    background-color: #333;
+    color: #fff;
+    padding: 4px;
+    border: 1px solid #444;
+}
+
+/* Tabs (if used) */
+QTabWidget::pane {
+    border: 1px solid #444;
+    background: #1a1a1a;
+}
+
+QTabBar::tab {
+    background: #2c2c2c;
+    color: #f0f0f0;
+    padding: 6px 12px;
+    border: 1px solid #444;
+    border-bottom: none;
+}
+
+QTabBar::tab:selected {
+    background: #3a3a3a;
+    color: #ffffff;
+}
