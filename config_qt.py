@@ -20,8 +20,7 @@ REVERSE_PRICE_MAP = {v: k for k, v in PRICE_MAP.items()}
 DEFAULT_DATA_DIR = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), "SwiftSaleApp")
 REMEMBER_ME_PATH = os.path.join(DEFAULT_DATA_DIR, "remember_me.json")
 CONFIG_PATH = os.path.join(DEFAULT_DATA_DIR, "config.json")
-NGROK_PATH = os.getenv("NGROK_PATH", os.path.join(USER_DATA_DIR, "ngrok.exe"))
-
+NGROK_PATH = os.getenv("NGROK_PATH", os.path.join(DEFAULT_DATA_DIR, "ngrok.exe"))
 
 # ─── BIN LIMITS PER TIER ──────────────────────────
 TIER_LIMITS = {
