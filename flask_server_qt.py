@@ -363,3 +363,27 @@ class FlaskServer:
     def shutdown(self):
         """Shutdown the Flask server."""
         self.logger.info("Shutting down Flask server")
+
+# This block is only used for local testing. Not triggered in Render deployments.
+if __name__ == "__main__":
+    from stripe_service_qt import StripeService
+    from bidder_manager_qt import BidderManager
+    from config_qt import load_config
+
+    cfg = load_config()
+    port = int(cfg.get("PORT", 10000))
+
+    bidder_manager = BidderManager()
+    stripe_service = StripeService()
+
+    server = FlaskServer(
+        port=port,
+        stripe_service=stripe_service,
+        api_token=cfg.get("API_TOKEN", ""),
+        latest_bin_assignment_callback=None,
+        secret_key=cfg.get("SECRET_KEY", os.urandom(24).hex()),
+        log_info=print,
+        log_error=print,
+        bidder_manager=bidder_manager
+    )
+    server.start()

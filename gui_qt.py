@@ -77,8 +77,9 @@ class SwiftSaleGUI(QMainWindow):
         config = load_config()
         install_config = load_install_info()
         self.user_email = config.get('email', '') or user_email
-        self.install_id = install_config['install_id']
-        self.tier = install_config['tier']
+        self.install_id = install_config.get('install_id', '')
+        self.tier = install_config.get('tier', 'Trial')  # or "Free" if that’s your default
+
         
         # Initialize CloudDatabaseManager and sync in production
         if config['FLASK_ENV'] == 'production':

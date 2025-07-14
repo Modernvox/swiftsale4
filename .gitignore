@@ -11,3 +11,5 @@ build/
 .env
 ngrok.exe
 *.csv
+".env.production" 
+.env.production 
