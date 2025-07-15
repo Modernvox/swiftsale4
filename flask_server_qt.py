@@ -10,7 +10,7 @@ from flask_socketio import SocketIO
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from waitress import serve
-from config_qt import PRICE_MAP, REVERSE_PRICE_MAP, TIER_LIMITS, load_config, get_resource_path
+from config_qt import PRICE_MAP, REVERSE_PRICE_MAP, TIER_LIMITS, load_config, get_resource_path, DEFAULT_DATA_DIR
 from stripe_service_qt import StripeService
 from bidder_manager_qt import BidderManager
 import stripe
