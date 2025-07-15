@@ -194,131 +194,98 @@ class FlaskServer:
             """
             return render_template("index.html")
 
-        @self.app.route('/create-checkout-session', methods=['POST'])
-        def create_checkout_session():
-            """Create a Stripe checkout session.
+    @app.route('/create-checkout-session', methods=['POST'])
+    def create_checkout_session():
+        if os.getenv("RENDER") != "true":
+            return json_error("Checkout is disabled in local mode", 403)
 
-            Input (JSON):
-                - tier (str): Subscription tier.
-                - user_email (str): User's email address.
+        data = request.get_json() or {}
+        tier = data.get('tier')
+        user_email = data.get('user_email')
+        if not tier or not user_email:
+            return json_error("Missing tier or user_email", 400)
+        try:
+            session, status = self.stripe_service.create_checkout_session(tier, user_email, request.url_root)
+            return json_success(session, status)
+        except Exception as e:
+            self.logger.error(f"Stripe session error: {e}", exc_info=True, extra={"request_id": g.request_id})
+            return json_error(str(e), 500)
 
-            Returns:
-                JSON: Checkout session details on success (HTTP 200).
-                JSON: {"error": "message"} on failure (HTTP 400 or 500).
-            """
+    @app.route('/subscription-status', methods=['GET'])
+    def subscription_status():
+        email = request.args.get('email')
+        if not email:
+            return json_error("Missing email", 400)
+        try:
+            if not self.stripe_service.db_manager:
+                self.logger.warning("DB manager not available, falling back to Trial tier", extra={"request_id": g.request_id})
+                return json_success({"tier": "Trial", "status": "Unavailable", "next_billing_date": "N/A"}, 200)
+
+            tier = self.stripe_service.db_manager.get_user_tier(email)
+            license_key = self.stripe_service.db_manager.get_user_license_key(email)
+            status, next_billing_date = self.stripe_service.get_subscription_status(license_key) if license_key else ("N/A", "N/A")
+            return json_success({"tier": tier or "Trial", "status": status, "next_billing_date": next_billing_date}, 200)
+        except Exception as e:
+            self.logger.error(f"Subscription status error for {email}: {e}", exc_info=True, extra={"request_id": g.request_id})
+            return json_error(str(e), 500)
+
+
+    @app.route('/stripe/webhook', methods=['POST'])
+    def stripe_webhook():
+        if os.getenv("RENDER") != "true":
+            return "", 200  # Silently ignore webhooks in local mode
+
+        try:
+            payload = request.get_data(cache=False)
+            sig_header = request.headers.get('Stripe-Signature')
+            if not payload or not sig_header:
+                self.logger.error("Webhook missing payload or signature header", extra={"request_id": g.request_id})
+                return json_error("Missing signature or payload", 400)
+            status_code, response = self.stripe_service.handle_webhook(payload, sig_header)
+            if isinstance(response, dict):
+                return json_success(response, status_code)
+            return response, status_code
+        except Exception as e:
+            self.logger.error(f"Webhook endpoint error: {e}", exc_info=True, extra={"request_id": g.request_id})
+            return json_error("Webhook endpoint failure", 500)
+
+    @app.route('/register-install', methods=['POST'])
+    def register_install():
+        if os.getenv("RENDER") != "true":
+            return json_error("Install registration only available in cloud environment", 403)
+        try:
             data = request.get_json() or {}
-            tier = data.get('tier')
-            user_email = data.get('user_email')
-            if not tier or not user_email:
-                return json_error("Missing tier or user_email", 400)
-            try:
-                session, status = self.stripe_service.create_checkout_session(tier, user_email, request.url_root)
-                return json_success(session, status)
-            except Exception as e:
-                self.logger.error(f"Stripe session error: {e}", exc_info=True, extra={"request_id": g.request_id})
-                return json_error(str(e), 500)
-
-        @self.app.route('/subscription-status', methods=['GET'])
-        def subscription_status():
-            """Retrieve subscription status for a user.
-
-            Input (Query Params):
-                - email (str): User's email address.
-
-            Returns:
-                JSON: {"tier": str, "status bulan": str, "next_billing_date": str} on success (HTTP 200).
-                JSON: {"error": "message"} on failure (HTTP 400 or 500).
-            """
-            email = request.args.get('email')
+            email = data.get('email')
             if not email:
-                return json_error("Missing email", 400)
-            try:
-                tier = self.stripe_service.db_manager.get_user_tier(email)
-                license_key = self.stripe_service.db_manager.get_user_license_key(email)
-                status, next_billing_date = self.stripe_service.get_subscription_status(license_key) if license_key else ("N/A", "N/A")
-                return json_success({"tier": tier or "Trial", "status": status, "next_billing_date": next_billing_date}, 200)
-            except Exception as e:
-                self.logger.error(f"Subscription status error for {email}: {e}", exc_info=True, extra={"request_id": g.request_id})
-                return json_error(str(e), 500)
+                return json_error("Email is required", 400)
 
-        @self.app.route('/stripe/webhook', methods=['POST'])
-        def stripe_webhook():
-            """Handle Stripe webhook events.
+            email = email.strip().lower()
+            if not re.match(r"[^@]+@[^@]+\\.[^@]+", email):
+                return json_error("Invalid email address", 400)
 
-            Input:
-                - Body: Raw webhook payload.
-                - Stripe-Signature (header): Webhook signature for verification.
+            hashed_email = hashlib.sha256(email.encode()).hexdigest()
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT install_id, tier FROM installs WHERE hashed_email = %s", (hashed_email,))
+                    existing_install = cur.fetchone()
+                    if existing_install:
+                        self.logger.info(f"Existing install found for hashed_email: {hashed_email}", extra={"request_id": g.request_id})
+                        return json_success({"install_id": existing_install[0], "tier": existing_install[1]}, 200)
 
-            Returns:
-                JSON or str: Response from StripeService or empty string.
-                JSON: {"error": "message"} on failure (HTTP 400 or 500).
-            """
-            try:
-                payload = request.get_data(cache=False)
-                sig_header = request.headers.get('Stripe-Signature')
-                if not payload or not sig_header:
-                    self.logger.error("Webhook missing payload or signature header", extra={"request_id": g.request_id})
-                    return json_error("Missing signature or payload", 400)
-                status_code, response = self.stripe_service.handle_webhook(payload, sig_header)
-                if isinstance(response, dict):
-                    return json_success(response, status_code)
-                return response, status_code
-            except Exception as e:
-                self.logger.error(f"Webhook endpoint error: {e}", exc_info=True, extra={"request_id": g.request_id})
-                return json_error("Webhook endpoint failure", 500)
+                    cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
+                    last_install = cur.fetchone()
+                    new_id = f"{int(last_install[0]) + 1:07d}" if last_install else "0000001"
 
-        @self.app.route('/register-install', methods=['POST'])
-        def register_install():
-            """Register a new installation for a user.
+                    cur.execute("INSERT INTO installs (hashed_email, install_id, tier) VALUES (%s, %s, %s)", (hashed_email, new_id, "free"))
+                    conn.commit()
 
-            Input (JSON):
-                - email (str): User's email address.
+            self.logger.info(f"New install registered: {new_id} for hashed_email: {hashed_email}", extra={"request_id": g.request_id})
+            return json_success({"install_id": new_id, "tier": "free"}, 200)
 
-            Returns:
-                JSON: {"install_id": str, "tier": str} on success (HTTP 200).
-                JSON: {"error": "message"} on failure (HTTP 400 or 500).
-            """
-            try:
-                data = request.get_json() or {}
-                email = data.get('email')
-                if not email:
-                    return json_error("Email is required", 400)
+        except Exception as e:
+            self.logger.error(f"Error registering install: {e}", exc_info=True, extra={"request_id": g.request_id})
+            return json_error("Internal server error", 500)
 
-                # Validate and normalize email
-                email = email.strip().lower()
-                if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-                    return json_error("Invalid email address", 400)
-
-                hashed_email = hashlib.sha256(email.encode()).hexdigest()
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        # Check for existing install
-                        cur.execute("SELECT install_id, tier FROM installs WHERE hashed_email = %s", (hashed_email,))
-                        existing_install = cur.fetchone()
-                        if existing_install:
-                            self.logger.info(f"Existing install found for hashed_email: {hashed_email}",
-                                             extra={"request_id": g.request_id})
-                            return json_success({"install_id": existing_install[0], "tier": existing_install[1]}, 200)
-
-                        # Generate new install ID
-                        cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
-                        last_install = cur.fetchone()
-                        new_id = f"{int(last_install[0]) + 1:07d}" if last_install else "0000001"
-
-                        # Save new install
-                        cur.execute(
-                            "INSERT INTO installs (hashed_email, install_id, tier) VALUES (%s, %s, %s)",
-                            (hashed_email, new_id, "free")
-                        )
-                        conn.commit()
-
-                self.logger.info(f"New install registered: {new_id} for hashed_email: {hashed_email}",
-                                 extra={"request_id": g.request_id})
-                return json_success({"install_id": new_id, "tier": "free"}, 200)
-
-            except Exception as e:
-                self.logger.error(f"Error registering install: {e}", exc_info=True, extra={"request_id": g.request_id})
-                return json_error("Internal server error", 500)
 
         @self.app.route('/api/validate-dev-code', methods=['GET'])
         def validate_dev_code():
