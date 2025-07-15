@@ -237,7 +237,7 @@ def main():
         log_info(f"Latest bin callback received: {bin_info}")
 
     cloud_db = None
-    if config.get("FLASK_ENV", "development") == "production":
+    if os.getenv("FLASK_ENV", "development") == "production":
         try:
             cloud_db = CloudDatabaseManager(log_info=log_info, log_error=log_error)
         except Exception as e:
