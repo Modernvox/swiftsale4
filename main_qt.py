@@ -17,7 +17,7 @@ from bidder_manager_qt import BidderManager
 from flask_server_qt import FlaskServer
 from gui_qt import SwiftSaleGUI
 from stripe_service_qt import StripeService
-from config_qt import load_config
+from config_qt import load_config, DEFAULT_TRIAL_EMAIL
 
 load_dotenv()
 
@@ -263,7 +263,7 @@ def main():
     gui = SwiftSaleGUI(
         stripe_service=stripe_service,  # Pass stripe_service instead of None
         api_token=config["API_TOKEN"],
-        user_email=config.get("USER_EMAIL", ""),
+        user_email = config.get("USER_EMAIL", "").strip() or DEFAULT_TRIAL_EMAIL
         base_url=config["APP_BASE_URL"],
         dev_unlock_code = config.get("DEV_UNLOCK_CODE", ""),
         telegram_bot_token=config.get("TELEGRAM_BOT_TOKEN", ""),

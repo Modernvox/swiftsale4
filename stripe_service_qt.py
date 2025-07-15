@@ -249,6 +249,58 @@ class StripeService:
             return 500, {"error": "Internal server error"}
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def upgrade_subscription(self, user_email, current_tier, new_tier, license_key):
+        """
+        Upgrade a user's subscription plan. Returns True on success, False on error.
+        """
+        if license_key == "DEV_MODE":
+            if new_tier == current_tier:
+                logging.info(f"(dev) No-op upgrade; already on {new_tier} for {user_email}")
+                return False
+            self.db_manager.update_subscription(user_email, new_tier, "DEV_MODE")
+            hashed_email = self.hash_email(user_email)
+            install = self.db_manager.get_install_by_hashed_email(hashed_email)
+            if install:
+                self.db_manager.update_install_tier(hashed_email, new_tier)
+                logging.info(f"(dev) Updated install tier to {new_tier} for hashed email {hashed_email}")
+            logging.info(f"(dev) Upgraded to {new_tier} for {user_email}")
+            return True
+
+        if not license_key or not user_email:
+            logging.warning("Upgrade attempt: Missing license key or user email.")
+            return False
+
+        try:
+            subscription = stripe.Subscription.retrieve(license_key)
+            price_id = self.price_map.get(new_tier)
+            if not price_id:
+                logging.error(f"Invalid tier: {new_tier}")
+                return False
+
+            stripe.Subscription.modify(
+                license_key,
+                items=[{"id": subscription["items"]["data"][0]["id"], "price": price_id}],
+            )
+
+            self.db_manager.update_subscription(user_email, new_tier, license_key)
+            hashed_email = self.hash_email(user_email)
+            install = self.db_manager.get_install_by_hashed_email(hashed_email)
+            if install:
+                self.db_manager.update_install_tier(hashed_email, new_tier)
+                logging.info(f"Upgraded install tier to {new_tier} for hashed email {hashed_email}")
+
+            logging.info(f"Upgrade complete: {user_email} moved to {new_tier}")
+            return True
+
+        except stripe.error.StripeError as e:
+            logging.error(f"Stripe error upgrading {user_email} to {new_tier}: {e}", exc_info=True)
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error upgrading {user_email} to {new_tier}: {e}", exc_info=True)
+            return False
+
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def downgrade_subscription(self, user_email, current_tier, new_tier, license_key):
         """
         Downgrade or cancel a subscription. Returns True on success, False if no action taken or on error.

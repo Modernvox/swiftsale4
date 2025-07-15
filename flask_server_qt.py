@@ -235,21 +235,27 @@ class FlaskServer:
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute("""
-                            SELECT email, expires_at, used FROM dev_codes
+                            SELECT email, expires_at, used, assigned_to, device_id
+                            FROM dev_codes
                             WHERE code = %s
                         """, (code,))
                         row = cur.fetchone()
                         if not row:
-                            return json_error("Invalid code", 404)
-                        email, expires_at, used = row
+                            return json_error("Invalid or expired developer code. Try again or contact support", 404)
+
+                        email, expires_at, used, assigned_to, bound_device = row
+                        now = datetime.utcnow()
+
                         if used:
-                            return json_error("Code already used", 403)
-                        if expires_at and datetime.utcnow() > expires_at:
-                            return json_error("Code expired", 403)
+                            if expires_at and datetime.utcnow() > expires_at:
+                                return json_error("Developer code expired. Contact support.", 403)
+                            return json_error("Developer code already used. Contact support.", 403)
+
                         return json_success({"valid": True, "email": email}, 200)
+
             except Exception as e:
                 self.logger.error(f"Dev code validation error: {e}", exc_info=True, extra={"request_id": g.request_id})
-                return json_error("Server error", 500)
+                return json_error("Server error. Launching in trial mode.", 500)
 
     def _register_socketio_events(self):
         @self.socketio.on('connect')

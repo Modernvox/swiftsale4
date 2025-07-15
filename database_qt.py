@@ -39,6 +39,9 @@ class DatabaseManager:
                 self.conn = sqlite3.connect(db_path, check_same_thread=False)
                 self.db_path = db_path
                 logging.info(f"Connected to SQLite database: {db_path}")
+                self._initialize_database()
+                self._migrate_database()
+
             except sqlite3.Error as e:
                 logging.error(f"Database connection failed for {db_path}: {e}")
                 raise
@@ -51,6 +54,7 @@ class DatabaseManager:
                 email TEXT PRIMARY KEY,
                 tier TEXT NOT NULL,
                 license_key TEXT
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
         cursor.execute("""
@@ -138,8 +142,8 @@ class DatabaseManager:
     def save_subscription(self, email, tier, license_key):
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT OR REPLACE INTO subscriptions (email, tier, license_key) VALUES (?, ?, ?)",
-            (email, tier, license_key)
+            "INSERT OR REPLACE INTO subscriptions (email, tier, license_key, updated_at) VALUES (?, ?, ?, ?)",
+            (email, tier, license_key, datetime.utcnow().isoformat())
         )
         self.conn.commit()
         logging.info(f"Saved subscription for {email}: tier={tier}, license_key={license_key}")
@@ -193,8 +197,8 @@ class DatabaseManager:
             )
         else:
             cursor.execute(
-                "INSERT INTO subscriptions (email, tier, license_key) VALUES (?, ?, ?)",
-                (email, tier, license_key)
+                "INSERT OR REPLACE INTO subscriptions (email, tier, license_key, updated_at) VALUES (?, ?, ?, ?)",
+                (email, tier, license_key, datetime.utcnow().isoformat())
             )
         self.conn.commit()
         logging.info(f"Updated subscription for {email}: tier={tier}, license_key={license_key}")
@@ -206,7 +210,8 @@ class DatabaseManager:
     def load_subscription_by_id(self, license_key):
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT email, tierinse0; tier, license_key FROM subscriptions WHERE license_key = ?", (license_key,)
+            "SELECT email, tier, license_key FROM subscriptions WHERE license_key = ?",
+            (license_key,)
         )
         result = cursor.fetchone()
         return (result[0], result[1], result[2]) if result else (None, None, None)
