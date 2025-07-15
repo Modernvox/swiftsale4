@@ -9,6 +9,10 @@ import time
 class CloudDatabaseManager:
     def __init__(self, log_info=None, log_error=None):
         env = os.getenv("ENV", "development")
+
+        if getattr(sys, "frozen", False):
+            env = "production"
+
         if env != "production":
             raise RuntimeError("CloudDatabaseManager is disabled in non-production environments")
 
