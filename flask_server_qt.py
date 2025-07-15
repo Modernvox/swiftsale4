@@ -256,6 +256,12 @@ class FlaskServer:
         def on_connect():
             self.logger.info("Client connected via SocketIO", extra={"request_id": getattr(g, 'request_id', 'unknown')})
 
+    def start(self):
+        """Start the Flask server using Waitress."""
+        self.logger.info(f"Starting Flask server on port {self.port}")
+        serve(self.app, host="0.0.0.0", port=self.port, threads=8)
+
+
     def shutdown(self):
         self.logger.info("Shutting down Flask server")
 
