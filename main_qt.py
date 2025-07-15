@@ -21,13 +21,6 @@ from config_qt import load_config
 
 load_dotenv()
 
-# --- Force production mode for PyInstaller builds ---
-if getattr(sys, 'frozen', False):
-    os.environ["FLASK_ENV"] = "production"
-
-log_info(f"Environment: {os.getenv('FLASK_ENV')}")
-
-
 qt_dir = os.path.abspath(os.path.dirname(__file__))
 user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
 os.makedirs(user_data_dir, exist_ok=True)
@@ -55,6 +48,14 @@ def log_info(message):
 def log_error(message, exc_info=False):
     logging.error(message, exc_info=exc_info)
     custom_log("ERROR", message)
+
+
+# --- Force production mode for PyInstaller builds ---
+if getattr(sys, 'frozen', False):
+    os.environ["FLASK_ENV"] = "production"
+
+log_info(f"Environment: {os.getenv('FLASK_ENV')}")
+
 
 file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
 file_handler.setLevel(logging.INFO)
