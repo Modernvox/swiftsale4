@@ -21,6 +21,13 @@ from config_qt import load_config
 
 load_dotenv()
 
+# --- Force production mode for PyInstaller builds ---
+if getattr(sys, 'frozen', False):
+    os.environ["FLASK_ENV"] = "production"
+
+log_info(f"Environment: {os.getenv('FLASK_ENV')}")
+
+
 qt_dir = os.path.abspath(os.path.dirname(__file__))
 user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
 os.makedirs(user_data_dir, exist_ok=True)
