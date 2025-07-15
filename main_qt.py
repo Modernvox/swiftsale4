@@ -240,6 +240,7 @@ def main():
     if os.getenv("FLASK_ENV", "development") == "production":
         try:
             cloud_db = CloudDatabaseManager(log_info=log_info, log_error=log_error)
+            stripe_service.db_manager = cloud_db
         except Exception as e:
             log_error(f"Failed to initialize CloudDatabaseManager: {e}", exc_info=True)
 
