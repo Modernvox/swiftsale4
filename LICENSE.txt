@@ -1,0 +1,30 @@
+SwiftSaleAppV4 – License Agreement
+© 2025 Michael St Pierre. All rights reserved.
+
+By installing or using SwiftSaleAppV4 ("Software"), you agree to the following terms:
+
+1. GRANT OF LICENSE
+You are granted a non-transferable, non-exclusive license to install and use this Software for personal or business use on a single machine. Additional licenses are required for use on multiple machines.
+
+2. INTELLECTUAL PROPERTY
+All content, code, and functionality within SwiftSaleAppV4 is the property of Michael St Pierre. This Software is protected by copyright laws and international treaties.
+
+3. RESTRICTIONS
+You may not:
+- Modify, decompile, reverse engineer, or disassemble the Software.
+- Distribute, sublicense, rent, lease, or sell the Software or any part of it.
+- Remove or alter any proprietary notices or branding.
+
+4. NO WARRANTY
+This Software is provided "as is" without warranty of any kind, express or implied. Use at your own risk. Michael St Pierre shall not be held liable for any damages arising from the use or inability to use the Software.
+
+5. SUPPORT & UPDATES
+Support and updates are offered at the sole discretion of the developer. Access to future features or updates may require a subscription or license upgrade.
+
+6. TERMINATION
+Your license will be terminated automatically if you violate any of these terms. Upon termination, you must uninstall and delete all copies of the Software.
+
+For support, licensing, or commercial inquiries, visit:
+https://swiftsaleapp.com/support
+
+Thank you for supporting SwiftSaleApp.

@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.db
+*.sqlite3
+*.log
+*.env
+venv/
+dist/
+build/
+*.spec
+.env
+ngrok.exe
+*.csv
+".env.production" 
+.env.production 
+dev_code_admin_gui.py
+encrypt_keys.py
+fernet.key
+fernet_key.py
+register_paid_user.py
+SwiftSaleAppV4_Installer.exe
+SwiftSaleAppV4_Installer.iss
+labels.pdf
+New Text Document.txt
+
