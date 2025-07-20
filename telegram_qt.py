@@ -5,7 +5,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 class TelegramService:
-    def __init__(self, bot_token, chat_id=None, log_info=None, log_error=None, loop=None):
+    def __init__(self, bot_token, chat_id=None, log_info=None, log_warning=None, log_error=None, loop=None):
         """
         Initialize TelegramService with a bot token and optional asyncio loop.
         

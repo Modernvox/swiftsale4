@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 from PySide6.QtWidgets import (
     QFrame, QLabel, QPushButton, QLineEdit, QCheckBox, QTextEdit, QTextBrowser,
     QTableWidget, QScrollBar, QTabWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QSizePolicy, QTreeWidget, QTreeWidgetItem,
-    QSpacerItem, QWidget, QStatusBar
+    QSpacerItem, QWidget, QStatusBar, QApplication
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QFont, QCursor
+from PySide6.QtCore import Qt, QRegularExpression
+from PySide6.QtGui import QPixmap, QFont, QCursor, QRegularExpressionValidator
 from config_qt import get_resource_path
 
 def setup_ui(main_window, is_dev_mode=None):
@@ -16,7 +17,7 @@ def setup_ui(main_window, is_dev_mode=None):
         is_dev_mode = os.getenv("FLASK_ENV", "production").lower() != "production"
 
     main_window.setWindowTitle("SwiftSale")
-    main_window.setFixedWidth(1000)  # Set window width
+    main_window.setFixedWidth(960)  # Set window width
     main_window.setMinimumHeight(700)
 
     # Load external stylesheet for dark theme
@@ -44,10 +45,10 @@ def setup_ui(main_window, is_dev_mode=None):
     try:
         spacer = QSpacerItem(20, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
         header_layout.addItem(spacer)
-        logo_pixmap = QPixmap(logo_path).scaled(90, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        logo_pixmap = QPixmap(logo_path).scaled(75, 75, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         logo_label = QLabel()
         logo_label.setPixmap(logo_pixmap)
-        logo_label.setFixedSize(90, 90)
+        logo_label.setFixedSize(75, 75)
         header_layout.addWidget(logo_label)
         spacer = QSpacerItem(180, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
         header_layout.addItem(spacer)
@@ -85,9 +86,26 @@ def setup_ui(main_window, is_dev_mode=None):
     input_layout.setSpacing(6)
 
     input_layout.addWidget(QLabel("Username:"), 0, 0)
+
     main_window.username_entry = QLineEdit()
-    main_window.username_entry.focusInEvent = main_window.auto_paste_username
+    main_window.username_entry.setObjectName("usernameEntry")
     main_window.username_entry.setFixedHeight(28)
+
+    # Apply alphanumeric validator (letters and numbers only, max 40 characters)
+    regex = QRegularExpression(r"^[A-Za-z0-9]{0,40}$")
+    validator = QRegularExpressionValidator(regex)
+    main_window.username_entry.setValidator(validator)
+
+    # Custom focusInEvent to sanitize pasted text
+    def focus_in_event_override(event):
+        clipboard = QApplication.clipboard()
+        raw_text = clipboard.text().strip()
+        sanitized = re.sub(r'[^A-Za-z0-9]', '', raw_text)[:40]
+        main_window.username_entry.setText(sanitized)
+        QLineEdit.focusInEvent(main_window.username_entry, event)
+
+    main_window.username_entry.focusInEvent = focus_in_event_override
+
     input_layout.addWidget(main_window.username_entry, 0, 1, 1, 3)
 
     main_window.add_bidder_button = QPushButton("Add Bidder")
@@ -104,7 +122,6 @@ def setup_ui(main_window, is_dev_mode=None):
         }
     """)
     input_layout.addWidget(main_window.add_bidder_button, 1, 1)
-
     main_window.clear_button = QPushButton("Clear")
     main_window.clear_button.setObjectName("danger")
     input_layout.addWidget(main_window.clear_button, 1, 2)
@@ -122,6 +139,7 @@ def setup_ui(main_window, is_dev_mode=None):
 
     main_window.giveaway_help_button = QPushButton("?")
     main_window.giveaway_help_button.setFixedWidth(20)
+    main_window.giveaway_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.giveaway_help_button.setAccessibleName("help")
     input_layout.addWidget(main_window.giveaway_help_button, 4, 2)
 
@@ -145,6 +163,7 @@ def setup_ui(main_window, is_dev_mode=None):
     top_buyer_row.addWidget(main_window.top_buyer_copy_label)
     main_window.top_buyer_help_button = QPushButton("?")
     main_window.top_buyer_help_button.setFixedWidth(20)
+    main_window.top_buyer_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.top_buyer_help_button.setAccessibleName("help")
     top_buyer_row.addWidget(main_window.top_buyer_help_button)
     analytics_layout.addLayout(top_buyer_row)
@@ -154,6 +173,7 @@ def setup_ui(main_window, is_dev_mode=None):
     telegram_row.addWidget(main_window.telegram_label)
     main_window.telegram_help_button = QPushButton("?")
     main_window.telegram_help_button.setFixedWidth(20)
+    main_window.telegram_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.telegram_help_button.setAccessibleName("help")
     telegram_row.addWidget(main_window.telegram_help_button)
     analytics_layout.addLayout(telegram_row)
@@ -197,16 +217,12 @@ def setup_ui(main_window, is_dev_mode=None):
     main_window.start_giveaway_button = QPushButton("Giveaway")
     giveaway_btn_layout.addWidget(main_window.start_giveaway_button)
 
-    main_window.giveaway_text_help_button = QPushButton("?")
-    main_window.giveaway_text_help_button.setFixedWidth(20)
-    main_window.giveaway_text_help_button.setAccessibleName("help")
-    giveaway_btn_layout.addWidget(main_window.giveaway_text_help_button)
-
     main_window.start_flash_sale_button = QPushButton("Flash Sale")
     giveaway_btn_layout.addWidget(main_window.start_flash_sale_button)
 
     main_window.flash_sale_text_help_button = QPushButton("?")
     main_window.flash_sale_text_help_button.setFixedWidth(20)
+    main_window.flash_sale_text_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.flash_sale_text_help_button.setAccessibleName("help")
     giveaway_btn_layout.addWidget(main_window.flash_sale_text_help_button)
 
@@ -253,7 +269,7 @@ def setup_ui(main_window, is_dev_mode=None):
     main_window.latest_bidder_label.setFont(QFont("Arial", 16, QFont.Bold))
     main_window.latest_bidder_layout.addWidget(main_window.latest_bidder_label)
     main_window.bin_number_label = QLabel("")
-    main_window.bin_number_label.setFont(QFont("Arial", 20, QFont.Bold))
+    main_window.bin_number_label.setFont(QFont("Arial", 28, QFont.Bold))
     main_window.latest_bidder_layout.addWidget(main_window.bin_number_label)
     main_window.latest_bidder_layout.addStretch(1)
     bidders_layout.addWidget(latest_bidder_box)
@@ -272,50 +288,53 @@ def setup_ui(main_window, is_dev_mode=None):
     tree_layout.addWidget(main_window.scrollbar)
     bidders_layout.addWidget(main_window.tree_frame, stretch=1)
 
+    # Combined button row for import, export, sort bin, and clear
     button_row = QFrame()
     button_row_layout = QHBoxLayout(button_row)
-        
+    button_row_layout.setSpacing(4)
+    button_row_layout.setContentsMargins(0, 0, 0, 0)
+
     main_window.import_csv_button = QPushButton("Import")
+    main_window.import_csv_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
     button_row_layout.addWidget(main_window.import_csv_button)
-    main_window.import_csv_help_button = QPushButton("?")
-    main_window.import_csv_help_button.setFixedWidth(20)
-    main_window.import_csv_help_button.setAccessibleName("help")
-    button_row_layout.addWidget(main_window.import_csv_help_button)
 
     main_window.export_csv_button = QPushButton("Export")
+    main_window.export_csv_button.setObjectName("exportCsvButton")
+    main_window.export_csv_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
     button_row_layout.addWidget(main_window.export_csv_button)
+
     main_window.export_csv_help_button = QPushButton("?")
     main_window.export_csv_help_button.setFixedWidth(20)
+    main_window.export_csv_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.export_csv_help_button.setAccessibleName("help")
     button_row_layout.addWidget(main_window.export_csv_help_button)
-    button_row_layout.addStretch(1)
-    bidders_layout.addWidget(button_row)
 
-    sort_bin_frame = QFrame()
-    sort_bin_layout = QHBoxLayout(sort_bin_frame)
     main_window.sort_bin_asc_button = QPushButton("Sort Bin ↑")
-    sort_bin_layout.addWidget(main_window.sort_bin_asc_button)
-    main_window.sort_bin_asc_help_button = QPushButton("?")
-    main_window.sort_bin_asc_help_button.setFixedWidth(20)
-    main_window.sort_bin_asc_help_button.setAccessibleName("help")
-    sort_bin_layout.addWidget(main_window.sort_bin_asc_help_button)
+    main_window.sort_bin_asc_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    button_row_layout.addWidget(main_window.sort_bin_asc_button)
 
     main_window.sort_bin_desc_button = QPushButton("Sort Bin ↓")
-    sort_bin_layout.addWidget(main_window.sort_bin_desc_button)
+    main_window.sort_bin_desc_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    button_row_layout.addWidget(main_window.sort_bin_desc_button)
+
     main_window.sort_bin_desc_help_button = QPushButton("?")
     main_window.sort_bin_desc_help_button.setFixedWidth(20)
+    main_window.sort_bin_desc_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.sort_bin_desc_help_button.setAccessibleName("help")
-    sort_bin_layout.addWidget(main_window.sort_bin_desc_help_button)
+    button_row_layout.addWidget(main_window.sort_bin_desc_help_button)
 
     main_window.clear_bidders_button = QPushButton("Clear")
     main_window.clear_bidders_button.setObjectName("danger")
-    sort_bin_layout.addWidget(main_window.clear_bidders_button)
+    main_window.clear_bidders_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    button_row_layout.addWidget(main_window.clear_bidders_button)
+
     main_window.clear_bidders_help_button = QPushButton("?")
     main_window.clear_bidders_help_button.setFixedWidth(20)
+    main_window.clear_bidders_help_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     main_window.clear_bidders_help_button.setAccessibleName("help")
-    sort_bin_layout.addWidget(main_window.clear_bidders_help_button)
-    sort_bin_layout.addStretch(1)
-    bidders_layout.addWidget(sort_bin_frame)
+    button_row_layout.addWidget(main_window.clear_bidders_help_button)
+
+    bidders_layout.addWidget(button_row)
 
     right_layout.addWidget(bidders_group, stretch=1)
     content_layout.addWidget(right_frame, stretch=2)
@@ -324,7 +343,6 @@ def setup_ui(main_window, is_dev_mode=None):
     # Settings Tabs
     main_window.notebook = QTabWidget()
     main_window.notebook.setObjectName("settingsNotebook")
-
     main_window.notebook.setMinimumHeight(500)
     main_window.notebook.setVisible(False)
 
@@ -345,17 +363,17 @@ def setup_ui(main_window, is_dev_mode=None):
         <p><b>Step 6: Annotate or Print Labels</b><br>Stamp bin numbers or generate CSV packing lists.</p>
         <p><b>Step 7: Export/Import Shows</b><br>Save or resume show data via CSV.</p>
         <p><b>Bonus Tools:</b> Giveaway, Flash Sale, Sell Rate, Top Buyer shoutouts.</p>
-        <p>More help at <a href="https://swiftsaleapp.com">swiftsaleapp.com</a></p>
+        <p><b>More help at <a href="https://swiftsaleapp.com">swiftsaleapp.com</a></p>
     """)
     howto_layout.addWidget(howto_text)
     main_window.notebook.addTab(howto_tab, "How to Use")
 
     main_window.settings_frame = QFrame()
-    main_window.settings_frame.setObjectName("settingsTab")  
+    main_window.settings_frame.setObjectName("settingsTab")
     main_window.subscription_frame = QFrame()
     main_window.subscription_frame.setObjectName("subscriptionTab")
     main_window.annotate_frame = QFrame()
-    main_window.annotate_frame.setObjectName("annotateTab") 
+    main_window.annotate_frame.setObjectName("annotateTab")
     main_window.notebook.addTab(main_window.settings_frame, "Settings")
     main_window.notebook.addTab(main_window.subscription_frame, "Subscription")
     main_window.notebook.addTab(main_window.annotate_frame, "Annotate Labels")
@@ -375,7 +393,9 @@ def setup_ui(main_window, is_dev_mode=None):
         footer_text += "  ⚠ DEV MODE – No Payments Required"
     main_window.footer_label = QLabel(footer_text)
     main_window.footer_label.setFont(QFont("Arial", 9))
+    main_window.footer_label.setTextFormat(Qt.RichText)
     main_window.footer_label.setStyleSheet("padding-bottom: 10px; padding-left: 12px;")
+    main_window.footer_label.setText(footer_text)
     status_bar.addWidget(main_window.footer_label)
 
     main_window.toggle_tabs_btn = QPushButton("Settings")

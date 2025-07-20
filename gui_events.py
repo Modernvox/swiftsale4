@@ -2,15 +2,12 @@ from cloud_database_qt import CloudDatabaseManager
 from PySide6.QtWidgets import QMessageBox, QApplication, QInputDialog, QProgressDialog
 import sqlite3
 from gui_help_qt import (
-    show_giveaway_help,
     show_telegram_help,
     show_import_csv_help,
-    show_export_csv_help,
-    show_sort_bin_asc_help,
+    show_export_csv_help, 
     show_sort_bin_desc_help,
     show_clear_bidders_help,
     show_top_buyer_help,
-    show_giveaway_text_help,
     show_flash_sale_text_help
 )
 import hashlib
@@ -370,13 +367,9 @@ def bind_event_methods(gui):
 
 def bind_help_methods(gui):
     """Bind help button click events to their respective help functions."""
-    gui.giveaway_help_button.clicked.connect(lambda: show_giveaway_help(gui))
     gui.telegram_help_button.clicked.connect(lambda: show_telegram_help(gui))
-    gui.import_csv_help_button.clicked.connect(lambda: show_import_csv_help(gui))
     gui.export_csv_help_button.clicked.connect(lambda: show_export_csv_help(gui))
-    gui.sort_bin_asc_help_button.clicked.connect(lambda: show_sort_bin_asc_help(gui))
     gui.sort_bin_desc_help_button.clicked.connect(lambda: show_sort_bin_desc_help(gui))
     gui.clear_bidders_help_button.clicked.connect(lambda: show_clear_bidders_help(gui))
     gui.top_buyer_help_button.clicked.connect(lambda: show_top_buyer_help(gui))
-    gui.giveaway_text_help_button.clicked.connect(lambda: show_giveaway_text_help(gui))
     gui.flash_sale_text_help_button.clicked.connect(lambda: show_flash_sale_text_help(gui))

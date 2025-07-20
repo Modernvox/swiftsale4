@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from gui_layout import setup_ui
 from gui_help_qt import (
     show_giveaway_help, show_telegram_help, show_import_csv_help,
-    show_export_csv_help, show_sort_bin_asc_help, show_sort_bin_desc_help,
+    show_export_csv_help, show_sort_bin_desc_help,
     show_clear_bidders_help, show_top_buyer_help, show_giveaway_text_help,
     show_flash_sale_text_help
 )
@@ -55,8 +55,8 @@ class SwiftSaleGUI(QMainWindow):
     def __init__(self, stripe_service, api_token, user_email, base_url, dev_unlock_code, telegram_bot_token, telegram_chat_id, dev_access_granted, log_info, log_error, bidder_manager, bidders_db_path, subs_db_path):
         super().__init__()
 
-        self.default_x_offset_in = .35
-        self.default_y_offset_in = 5.5
+        self.default_x_offset_in = .40
+        self.default_y_offset_in = 5.4
 
         self.current_version = "4"
         self.dev_access_granted = dev_access_granted
@@ -129,7 +129,7 @@ class SwiftSaleGUI(QMainWindow):
 
         self.telegram_service = None
         self.sio = socketio.Client()
-        self.latest_bin_assignment = "Waiting for bidder..."
+        self.latest_bin_assignment = '<span style="color:#90ee90;">Waiting for bidder...</span>'
         self.settings_initialized = False
         self.subscription_initialized = False
         self.annotate_initialized = False

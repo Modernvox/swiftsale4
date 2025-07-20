@@ -1,11 +1,51 @@
-/* Base background and font color settings */
-QMainWindow {
-    background-color: #000000;
+
+
+
+QCheckBox {
+    color: #f0f0f0;
 }
 
-QLabel, QGroupBox, QFrame {
+QComboBox#tierComboBox {
+    color: #000000;            /* Text color */
+    background-color: #ffffff;
+    border: 1px solid #888;
+    border-radius: 4px;
+}
+QComboBox#tierComboBox QAbstractItemView {
+    color: #000000;  
+    background-color: #ffffff;
+}
+
+QDialog#HelpDialog {
+    background-color: #1a1a1a;
+}
+
+QDialog#HelpDialog QLabel {
     background-color: transparent;
     color: #f0f0f0;
+    font-family: Arial;
+    font-size: 14pt;
+    font-weight: bold;
+}
+
+QDialog#HelpDialog QTextBrowser {
+    background-color: #1a1a1a;
+    color: #f0f0f0;
+    font-family: Arial;
+    font-size: 12pt;
+    border: none;
+}
+
+QDialog#HelpDialog QPushButton {
+    background-color: #2c2c2c;
+    color: #ffffff;
+    border: 1px solid #444;
+    padding: 5px 10px;
+    border-radius: 5px;
+}
+
+QDialog#HelpDialog QPushButton:hover {
+    background-color: #3a3a3a;
 }
 
 /* GroupBox framing for better section separation */
@@ -25,6 +65,29 @@ QGroupBox:title {
     font-weight: bold;
 }
 
+QHeaderView::section {
+    background-color: #333;
+    color: #fff;
+    padding: 4px;
+    border: 1px solid #444;
+}
+
+QLabel, QGroupBox, QFrame {
+    background-color: transparent;
+    color: #f0f0f0;
+}
+
+QLabel#footer {
+    color: #aaaaaa;
+    padding: 4px 8px;
+    font-size: 10pt;
+    qproperty-alignment: AlignLeft;
+}
+
+QLabel#subscriptionLabel {
+    color: #000000;
+}
+
 /* Line edits and text edits */
 QLineEdit, QTextEdit {
     background-color: #2a2a2a;
@@ -32,6 +95,16 @@ QLineEdit, QTextEdit {
     border: 1px solid #555;
     border-radius: 4px;
 }
+QLineEdit#usernameEntry {
+    background-color: white;
+    color: black;
+}
+
+/* Base background and font color settings */
+QMainWindow {
+    background-color: #000000;
+}
+
 
 QPushButton#annotateButton {
     background-color: #FFD700;  /* Gold */
@@ -46,8 +119,20 @@ QPushButton#annotateButton:hover {
     color: #ffffff;
 }
 
+QPushButton#exportCsvButton {
+    background-color: #adc35d;   /* Light green */
+    color: #000000;
+    font-weight: bold;
+    border: 1px solid #6bb66b;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
 
-/* Buttons */
+QPushButton#exportCsvButton:hover {
+    background-color: #76d976;
+}
+
+
 QPushButton {
     background-color: #2c2c2c;
     color: #ffffff;
@@ -89,7 +174,7 @@ QPushButton#green:hover {
     background-color: #3cb371;
 }
 
-/* Help Buttons */
+
 QPushButton[accessibleName="help"] {
     background-color: #555555;
     color: #ffffff;
@@ -108,27 +193,82 @@ QPushButton[accessibleName="help"]:hover {
     background-color: #666666;
 }
 
-/* Checkboxes */
-QCheckBox {
-    color: #f0f0f0;
+QPushButton#settingsButton {
+    background-color: #2d5b99;
+    color: white;
+    border: 1px solid #4472c4;
+    border-radius: 5px;
+    font-weight: bold;
 }
 
-/* Table widget styling */
+QPushButton#settingsButton:hover {
+    background-color: #3b6fc4;
+}
+
+QPushButton#upgradeButton {
+    background-color: #16834f;
+    color: white;
+    border: 1px solid #4472c4;
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-weight: bold;
+}
+
+QPushButton#upgradeButton:hover {
+    background-color: #5eae5d;
+}
+
+QPushButton#downgradeButton {
+    background-color: #f7b145;
+    color: white;
+    border: 1px solid #aaaa00;
+    border-radius: 5px;
+    font-weight: bold;
+    padding: 5px 10px;
+}
+
+QPushButton#downgradeButton:hover {
+    background-color: #fac73e;
+}
+
+QPushButton#cancelButton {
+    background-color: #c04c4c;
+    color: white;
+    border: 1px solid #c04c4c;
+    border-radius: 5px;
+    font-weight: bold;
+    padding: 5px 10px;
+}
+QPushButton#cancelButton:hover {
+    background-color: #ea4b58;
+}
+
+/* General tab appearance */
+QTabBar::tab {
+    background: #95cb57;
+    color: #f0f0f0;
+    padding: 6px 12px;
+    border: 1px solid #444;
+    border-bottom: none;
+}
+
+/* Hover effect for ALL tabs */
+QTabBar::tab:hover {
+    background: #3a3a3a;
+}
+
+/* Selected tab styling (default) */
+QTabBar::tab:selected {
+    background: #3a3a3a;
+    color: #ffffff;
+}
+
 QTableWidget {
     background-color: #1e1e1e;
     color: #ffffff;
     gridline-color: #555;
 }
 
-/* Table headers */
-QHeaderView::section {
-    background-color: #333;
-    color: #fff;
-    padding: 4px;
-    border: 1px solid #444;
-}
-
-/* Tabs (if used) */
 QTabWidget::pane {
     border: 1px solid #444;
     background: #1a1a1a;
@@ -145,60 +285,6 @@ QTabBar::tab {
 QTabBar::tab:selected {
     background: #3a3a3a;
     color: #ffffff;
-}
-
-/* Help Dialogs */
-QDialog#HelpDialog {
-    background-color: #1a1a1a;
-}
-
-QDialog#HelpDialog QLabel {
-    background-color: transparent;
-    color: #f0f0f0;
-    font-family: Arial;
-    font-size: 14pt;
-    font-weight: bold;
-}
-
-QDialog#HelpDialog QTextBrowser {
-    background-color: #1a1a1a;
-    color: #f0f0f0;
-    font-family: Arial;
-    font-size: 12pt;
-    border: none;
-}
-
-QDialog#HelpDialog QPushButton {
-    background-color: #2c2c2c;
-    color: #ffffff;
-    border: 1px solid #444;
-    padding: 5px 10px;
-    border-radius: 5px;
-}
-
-QDialog#HelpDialog QPushButton:hover {
-    background-color: #3a3a3a;
-}
-
-QPushButton#settingsButton {
-    background-color: #2d5b99;
-    color: white;
-    border: 1px solid #4472c4;
-    border-radius: 5px;
-    font-weight: bold;
-}
-
-QPushButton#settingsButton:hover {
-    background-color: #3b6fc4;
-}
-
-
-/* Footer label (bottom of app) */
-QLabel#footer {
-    color: #aaaaaa;
-    padding: 4px 8px;
-    font-size: 10pt;
-    qproperty-alignment: AlignLeft;
 }
 
 /* White background and black text for How to tab */
@@ -249,56 +335,5 @@ QWidget#subscriptionTab QLabel {
 }
 QWidget#settingsTab QGroupBox:title,
 QWidget#subscriptionTab QGroupBox:title {
-    color: #000000;
-}
-QPushButton#upgradeButton {
-    background-color: #16834f;
-    color: white;
-    border: 1px solid #4472c4;
-    border-radius: 5px;
-    padding: 5px 10px;
-    font-weight: bold;
-}
-
-QPushButton#upgradeButton:hover {
-    background-color: #5eae5d;
-}
-
-QPushButton#downgradeButton {
-    background-color: #f7b145;
-    color: white;
-    border: 1px solid #aaaa00;
-    border-radius: 5px;
-    font-weight: bold;
-    padding: 5px 10px;
-}
-
-QPushButton#downgradeButton:hover {
-    background-color: #fac73e;
-}
-
-QPushButton#cancelButton {
-    background-color: #c04c4c;
-    color: white;
-    border: 1px solid #c04c4c;
-    border-radius: 5px;
-    font-weight: bold;
-    padding: 5px 10px;
-}
-QPushButton#cancelButton:hover {
-    background-color: #ea4b58;
-}
-
-QComboBox#tierComboBox {
-    color: #000000;            /* Text color */
-    background-color: #ffffff;
-    border: 1px solid #888;
-    border-radius: 4px;
-}
-QComboBox#tierComboBox QAbstractItemView {
-    color: #000000;  
-    background-color: #ffffff;
-}
-QLabel#subscriptionLabel {
     color: #000000;
 }

@@ -40,7 +40,7 @@ def show_giveaway_help(gui):
     title_label.setAlignment(Qt.AlignCenter)
     layout.addWidget(title_label)
     help_text = (
-        "SwiftSale assigns bins sequentially (1-500) to winning bidders, not giveaway winners, unless manually recorded during the show (not recommended).\n\n"
+        "SwiftSale assigns bins sequentially (1-600) to winning bidders, not giveaway winners, unless manually recorded during the show (not recommended).\n\n"
         "If you assign bins 1-20 but skip 2 giveaways, bins are still assigned 1-20 to bidders in order.\n\n"
         "SwiftSale's Annotated Labels tool will mark giveaway's and (or) flash sales as such automatically.\n\n"
         )
@@ -145,7 +145,7 @@ def show_export_csv_help(gui):
         "1. Click 'Export CSV' and choose a save location.\n"
         "2. The system will save the bidders table data to the file.\n\n"
         "**Notes**:\n"
-        "- The exported CSV can be used for backups or re-importing."
+        "- The exported CSV can be used for backups or re-importing. Use import to rebuild complete shows!"
     )
     help_content = QTextBrowser()
     help_content.setPlainText(help_text)
@@ -155,35 +155,6 @@ def show_export_csv_help(gui):
     layout.addWidget(close_button)
     dialog.exec()
     gui.log_info("Displayed export CSV help pop-up")
-
-def show_sort_bin_asc_help(gui):
-    """Show help dialog for sorting by bin ascending."""
-    dialog = QDialog(gui)
-    dialog.setWindowTitle("SwiftSale Help")
-    dialog.setFixedSize(600, 400)
-    layout = QVBoxLayout(dialog)
-    title_label = QLabel("Sort by Bin Ascending (SwiftSale)")
-    title_label.setFont(QFont("Arial", 12, QFont.Bold))
-    title_label.setWordWrap(True)
-    title_label.setAlignment(Qt.AlignCenter)
-    layout.addWidget(title_label)
-    help_text = (
-        "The 'Sort by Bin ↑' button sorts the bidders table by bin number in ascending order.\n\n"
-        "**Steps**:\n"
-        "1. Click 'Sort by Bin ↑' to reorder the table.\n"
-        "2. Bidders will be listed from lowest to highest bin number.\n\n"
-        "**Notes**:\n"
-        "- Sorting updates the table display only.\n"
-        "- Use 'Sort by Bin ↓' for descending order."
-    )
-    help_content = QTextBrowser()
-    help_content.setPlainText(help_text)
-    layout.addWidget(help_content)
-    close_button = QPushButton("Close")
-    close_button.clicked.connect(dialog.accept)
-    layout.addWidget(close_button)
-    dialog.exec()
-    gui.log_info("Displayed sort by bin ascending help pop-up")
 
 def show_sort_bin_desc_help(gui):
     """Show help dialog for sorting by bin descending."""
@@ -197,10 +168,10 @@ def show_sort_bin_desc_help(gui):
     title_label.setAlignment(Qt.AlignCenter)
     layout.addWidget(title_label)
     help_text = (
-        "The 'Sort by Bin ↓' button sorts the bidders table by bin number in descending order.\n\n"
+        "The 'Sort by Bin ↓' buttons sort the bidders table by bin number in descending or ascending order.\n\n"
         "**Steps**:\n"
-        "1. Click 'Sort by Bin ↓' to reorder the table.\n"
-        "2. Bidders will be listed from highest to lowest bin number.\n\n"
+        "1. Click 'Sort by Bin ↓' or ↑ to reorder the table.\n"
+        "2. Bidders will be listed from highest to lowest bin number for descending and lowest to highet for ascending.\n\n"
         "**Notes**:\n"
         "- Sorting updates the table display only.\n"
         "- Use 'Sort by Bin ↑' for ascending order."
