@@ -1,6 +1,6 @@
-from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QFont, QPixmap, QGraphicsOpacityEffect
+from PySide6.QtGui import QPixmap, QFont, QCursor
 
 def show_toast(parent, message: str, duration=3000, icon_path=None):
     """Show a temporary toast message over the parent window with optional icon."""
