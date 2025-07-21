@@ -1,38 +1,33 @@
-from PySide6.QtWidgets import QLabel, QGraphicsOpacityEffect
-from PySide6.QtCore import QTimer, Qt, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QPixmap, QFont
+from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QFont, QPixmap, QGraphicsOpacityEffect
 
 def show_toast(parent, message: str, duration=3000, icon_path=None):
-    """Show a temporary toast message over the parent window."""
-    toast = QLabel(parent)
-    toast.setText(message)
-    toast.setStyleSheet("""
-        QLabel {
-            background-color: #444;
-            color: white;
-            padding: 10px 16px;
-            border-radius: 8px;
-            font-size: 12pt;
-        }
-    """)
-    toast.setFont(QFont("Segoe UI", 10))
-    toast.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    """Show a temporary toast message over the parent window with optional icon."""
+    toast = QWidget(parent)
+    layout = QHBoxLayout()
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(10)
 
     if icon_path:
-        icon = QPixmap(icon_path)
-        if not icon.isNull():
-            toast.setPixmap(icon.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            toast.setText(f"  {message}")
-            toast.setStyleSheet("""
-                QLabel {
-                    background-color: #444;
-                    color: white;
-                    padding: 10px 16px;
-                    border-radius: 8px;
-                    font-size: 12pt;
-                    qproperty-alignment: AlignLeft | AlignVCenter;
-                }
-            """)
+        icon_label = QLabel()
+        pixmap = QPixmap(icon_path)
+        if not pixmap.isNull():
+            icon_label.setPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            layout.addWidget(icon_label)
+
+    text_label = QLabel(message)
+    text_label.setStyleSheet("color: white; font-size: 12pt;")
+    text_label.setFont(QFont("Segoe UI", 10))
+    layout.addWidget(text_label)
+
+    toast.setLayout(layout)
+    toast.setStyleSheet("""
+        QWidget {
+            background-color: #444;
+            border-radius: 8px;
+        }
+    """)
 
     toast.adjustSize()
     width = toast.width()
@@ -50,6 +45,7 @@ def show_toast(parent, message: str, duration=3000, icon_path=None):
     animation.start()
 
     toast.show()
+    QTimer.singleShot(duration, toast.deleteLater)
 
     def fade_out():
         fade = QPropertyAnimation(opacity, b"opacity")
