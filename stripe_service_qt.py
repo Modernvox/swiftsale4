@@ -409,6 +409,8 @@ class StripeService:
         """
         Return (status, next_billing_date) for a given license_key.
         """
+        logging.info(f"Checking subscription status for license_key: {license_key}")
+
         if license_key == "DEV_MODE":
             return "Active", "N/A"
 
