@@ -92,7 +92,7 @@ def setup_ui(main_window, is_dev_mode=None):
     main_window.username_entry.setFixedHeight(28)
 
     # Apply alphanumeric validator (letters and numbers only, max 40 characters)
-    regex = QRegularExpression(r"^[A-Za-z0-9]{0,40}$")
+    regex = QRegularExpression(r"^[A-Za-z0-9_]{0,40}$")
     validator = QRegularExpressionValidator(regex)
     main_window.username_entry.setValidator(validator)
 
