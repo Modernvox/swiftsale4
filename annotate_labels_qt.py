@@ -101,7 +101,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
     font_name: str = "Helvetica-Bold",
     font_size_app: int = 14,
     font_size_bin: int = 15,
-    font_size_first: int = 17,
+    font_size_first: int = 19,
     font_size_default: int = 10
 ) -> list:
     conn = sqlite3.connect(bidders_db_path)
@@ -190,19 +190,25 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                 can = canvas.Canvas(packet, pagesize=PAGE_SIZE)
 
                 if bin_number:
-                    can.setFont(font_name, font_size_bin)
-                    can.drawString(stamp_x, stamp_y + font_size_first + 4, f"SwiftSale App Bin: #{bin_number}")
+                    label_text = "SwiftSale App Bin: "
+                    can.setFont(font_name, font_size_app)
+                    can.drawString(stamp_x, stamp_y + font_size_first + 4, label_text)
+                
+                    label_width = can.stringWidth(label_text, font_name, font_size_app)
+                    can.setFont(font_name, font_size_bin + 16)  # e.g., 19
+                    can.drawString(stamp_x + label_width + 30, stamp_y + font_size_first - 4, f"#{bin_number}")
+
                     if is_pickup and current_first_name:
                         can.setFont(font_name, font_size_first)
-                        can.drawString(stamp_x + 0.85 * inch, stamp_y, current_first_name)
+                        can.drawString(0.40 * inch, 4.72 * inch, f"****{current_first_name}****")
                 else:
                     skipped_pages.append((page_index, current_buyer or "unknown"))
                     can.setFont(font_name, font_size_app)
                     app_label = "SwiftSale App:"
-                    can.drawString(stamp_x, stamp_y + font_size_first + 4, app_label)
+                    can.drawString(stamp_x, stamp_y + font_size_first + 8, app_label)
                     text_width = can.stringWidth(app_label, font_name, font_size_app)
                     can.setFont(font_name, font_size_default)
-                    can.drawString(stamp_x + text_width + 10, stamp_y + font_size_first + 4, "Possible (Givvy/FlashSale)")
+                    can.drawString(stamp_x + text_width + 10, stamp_y + font_size_first + 4, "Givvy or Flash Sale?")
                     
 
                 can.save()
