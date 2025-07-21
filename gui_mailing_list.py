@@ -68,13 +68,9 @@ class MailingListWindow(QDialog):
         self.import_button = QPushButton("Import Emails from CSV")
         self.import_button.clicked.connect(self.import_emails)
 
-        self.update_total_customers()
-
         self.clear_button = QPushButton("Clear Mailing List")
         self.clear_button.setStyleSheet("background-color: #b33939; color: white;")
         self.clear_button.clicked.connect(self.clear_mailing_list)
-
-        self.update_total_customers()
 
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.close)
@@ -102,20 +98,18 @@ class MailingListWindow(QDialog):
         for row_idx, row in enumerate(entries):
             entry_id = row[0]
 
-            # ✅ Create visible, clickable checkbox cell
             checkbox_item = QTableWidgetItem()
-            checkbox_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            checkbox_item.setFlags(
+                Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsEditable
+            )
             checkbox_item.setCheckState(Qt.Unchecked)
             checkbox_item.setData(Qt.UserRole, entry_id)
             self.table.setItem(row_idx, 0, checkbox_item)
-
-            # Set fixed width so it's not hidden
             self.table.setColumnWidth(0, 40)
 
-            # ✅ Set remaining columns
-            for col_idx in range(12):  # 12 visible columns after checkbox
-                value = row[col_idx + 1]  # Skip ID
-                if col_idx == 11:  # Spent
+            for col_idx in range(12):
+                value = row[col_idx + 1]
+                if col_idx == 11:
                     display_value = f"${float(value):.2f}"
                     if sort_by_spent and row_idx < 3:
                         display_value = f"{medal_emojis[row_idx]} {display_value}"
@@ -128,16 +122,8 @@ class MailingListWindow(QDialog):
 
         self.table.blockSignals(False)
         self.table.setColumnWidth(0, 40)
-
         self.update_total_customers()
-
-
-    def _make_checkbox_item(self, entry_id):
-        item = QTableWidgetItem()
-        item.setCheckState(Qt.Unchecked)
-        item.setData(Qt.UserRole, entry_id)
-        item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-        return item
+        self.update_select_all_button_text()
 
     def apply_filter(self):
         text = self.search_bar.text().strip()
@@ -166,6 +152,17 @@ class MailingListWindow(QDialog):
             if checkbox_item:
                 checkbox_item.setCheckState(new_state)
 
+        self.update_select_all_button_text()
+
+    def update_select_all_button_text(self):
+        if all(
+            self.table.item(row, 0).checkState() == Qt.Checked
+            for row in range(self.table.rowCount())
+        ):
+            self.select_all_btn.setText("Unselect All")
+        else:
+            self.select_all_btn.setText("Select All")
+
     def export_selected_labels(self):
         selected_ids = []
         for row in range(self.table.rowCount()):
@@ -182,7 +179,6 @@ class MailingListWindow(QDialog):
         save_path, _ = QFileDialog.getSaveFileName(self, "Save Labels PDF", "labels.pdf", "PDF Files (*.pdf)")
         if save_path:
             try:
-                from export_labels import generate_labels_pdf
                 generate_labels_pdf(entries, save_path)
                 QMessageBox.information(self, "Success", f"Labels exported to:\n{save_path}")
             except Exception as e:
@@ -225,4 +221,3 @@ class MailingListWindow(QDialog):
     def open_business_info_dialog(self):
         dialog = BusinessInfoDialog(self)
         dialog.exec()
-
