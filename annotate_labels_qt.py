@@ -25,6 +25,7 @@ SETTINGS_FILE = os.path.join(os.getenv("LOCALAPPDATA"), "SwiftSale", "pdf_paths.
 def extract_username_and_pickup_firstname(page_text: str):
     lines = page_text.splitlines()
     found_shipment_block = False
+
     for idx, line in enumerate(lines):
         trimmed = line.strip().lower()
         if (
@@ -33,18 +34,26 @@ def extract_username_and_pickup_firstname(page_text: str):
             trimmed.startswith("pickup address:")
         ):
             found_shipment_block = True
-            for nxt in lines[idx + 1:]:
-                if not nxt.strip():
-                    continue
-                m = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([^)]+)\)", nxt.strip())
+            for offset in range(idx + 1, len(lines) - 1):
+                line1 = lines[offset].strip()
+                line2 = lines[offset + 1].strip()
+
+                # Case 1: Username on the next line in parentheses
+                if re.match(r"\([^)]+\)", line2):
+                    username = line2.strip("()").lower()
+                    if username != "new buyer!":
+                        first_name = line1.split()[0] if line1 else None
+                        return username, first_name
+
+                # Case 2: Name and username on the same line
+                m = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([^)]+)\)", line1)
                 if m:
                     first_name = m.group(1).strip() if m.group(1) else None
                     username = m.group(2).strip().lower()
                     if username != "new buyer!":
                         return username, first_name
-                    else:
-                        continue
             break
+
     return None, None
 
 
