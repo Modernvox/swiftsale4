@@ -92,7 +92,7 @@ class FlaskServer:
         self.limiter = Limiter(key_func=get_remote_address, storage_uri=os.getenv("LIMITER_STORAGE_URI", "memory://"))
         self.limiter.init_app(self.app)
 
-        cors_origins = os.getenv("CORS_ORIGINS", f"http://localhost:{self.port}" if self.env == "production" else "*")
+        cors_origins = ["https://swiftsale4.onrender.com"] if self.env == "production" else "*"
         transports = ["polling", "websocket"]
         self.socketio = SocketIO(self.app, cors_allowed_origins=cors_origins, async_mode=ASYNC_MODE, transports=transports)
 
