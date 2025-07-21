@@ -13,6 +13,7 @@ def generate_labels_pdf(entries, output_path):
     from_address = from_info.get("address", "")
     from_city = from_info.get("city", "")
     from_state = from_info.get("state", "")
+    from_zip = from_info.get("zip", "")  # <- was missing
 
     for entry in entries:
         full_name = entry[1]
@@ -24,23 +25,27 @@ def generate_labels_pdf(entries, output_path):
 
         # Draw FROM (business) info at top-left
         y_from = 5.75 * inch
-        c.setFont("Helvetica", 7)
+        c.setFont("Helvetica-Bold", 8.5)
         c.drawString(0.3 * inch, y_from, from_name)
-        y_from -= 0.18 * inch
-        c.drawString(0.3 * inch, y_from, from_address)
-        y_from -= 0.18 * inch
-        c.drawString(0.3 * inch, y_from, f"{from_city}, {from_state}")
 
-        # Draw TO (recipient) info lower on label
+        c.setFont("Helvetica", 8)
+        y_from -= 0.14 * inch
+        c.drawString(0.3 * inch, y_from, from_address)
+        y_from -= 0.14 * inch
+        c.drawString(0.3 * inch, y_from, f"{from_city}, {from_state} {from_zip}")
+
+        # Draw TO (recipient) info
         y = 4.5 * inch
         c.setFont("Helvetica-Bold", 12)
         c.drawString(0.5 * inch, y, full_name)
+
         y -= 0.3 * inch
         c.setFont("Helvetica", 12)
         c.drawString(0.5 * inch, y, address_1)
         if address_2:
             y -= 0.3 * inch
             c.drawString(0.5 * inch, y, address_2)
+
         y -= 0.3 * inch
         c.drawString(0.5 * inch, y, f"{city}, {state} {zip_code}")
 
