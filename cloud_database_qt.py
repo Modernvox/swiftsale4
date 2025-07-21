@@ -24,11 +24,7 @@ class CloudDatabaseManager:
         self.pool = None
         self._initialize_connection_pool()
         self._ensure_schema()
-
-        self.pool = None
-        self._initialize_connection_pool()
-        self._ensure_schema()
-
+               
     def _initialize_connection_pool(self):
         """Initialize a thread-safe connection pool."""
         database_url = get_config_value("DATABASE_URL")
