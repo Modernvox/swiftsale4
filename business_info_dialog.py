@@ -12,19 +12,42 @@ class BusinessInfoDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self.name_input = QLineEdit()
-        self.addr_input = QLineEdit()
+        self.business_name_input = QLineEdit()
+        self.contact_name_input = QLineEdit()
+        self.email_input = QLineEdit()
+        self.phone_input = QLineEdit()
+        self.addr1_input = QLineEdit()
+        self.addr2_input = QLineEdit()
         self.city_input = QLineEdit()
         self.state_input = QLineEdit()
+        self.zip_input = QLineEdit()
 
         layout.addWidget(QLabel("Business Name:"))
-        layout.addWidget(self.name_input)
-        layout.addWidget(QLabel("Street Address:"))
-        layout.addWidget(self.addr_input)
+        layout.addWidget(self.business_name_input)
+
+        layout.addWidget(QLabel("Contact Name:"))
+        layout.addWidget(self.contact_name_input)
+
+        layout.addWidget(QLabel("Email:"))
+        layout.addWidget(self.email_input)
+
+        layout.addWidget(QLabel("Phone:"))
+        layout.addWidget(self.phone_input)
+
+        layout.addWidget(QLabel("Address Line 1:"))
+        layout.addWidget(self.addr1_input)
+
+        layout.addWidget(QLabel("Address Line 2 (optional):"))
+        layout.addWidget(self.addr2_input)
+
         layout.addWidget(QLabel("City:"))
         layout.addWidget(self.city_input)
+
         layout.addWidget(QLabel("State:"))
         layout.addWidget(self.state_input)
+
+        layout.addWidget(QLabel("ZIP Code:"))
+        layout.addWidget(self.zip_input)
 
         button_layout = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -38,17 +61,27 @@ class BusinessInfoDialog(QDialog):
 
         # Populate saved values
         saved = load_business_info()
-        self.name_input.setText(saved.get("name", ""))
-        self.addr_input.setText(saved.get("address", ""))
+        self.business_name_input.setText(saved.get("business_name", ""))
+        self.contact_name_input.setText(saved.get("contact_name", ""))
+        self.email_input.setText(saved.get("email", ""))
+        self.phone_input.setText(saved.get("phone", ""))
+        self.addr1_input.setText(saved.get("address_line_1", ""))
+        self.addr2_input.setText(saved.get("address_line_2", ""))
         self.city_input.setText(saved.get("city", ""))
         self.state_input.setText(saved.get("state", ""))
+        self.zip_input.setText(saved.get("zip_code", ""))
 
     def save_info(self):
         info = {
-            "name": self.name_input.text().strip(),
-            "address": self.addr_input.text().strip(),
+            "business_name": self.business_name_input.text().strip(),
+            "contact_name": self.contact_name_input.text().strip(),
+            "email": self.email_input.text().strip(),
+            "phone": self.phone_input.text().strip(),
+            "address_line_1": self.addr1_input.text().strip(),
+            "address_line_2": self.addr2_input.text().strip(),
             "city": self.city_input.text().strip(),
-            "state": self.state_input.text().strip()
+            "state": self.state_input.text().strip(),
+            "zip_code": self.zip_input.text().strip()
         }
         save_business_info(info)
         self.accept()

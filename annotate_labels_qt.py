@@ -202,7 +202,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     label_text = "SwiftSale App Bin: "
                     can.setFont(font_name, font_size_app)
                     can.drawString(stamp_x, stamp_y + font_size_first + 4, label_text)
-                
+
                     label_width = can.stringWidth(label_text, font_name, font_size_app)
                     can.setFont(font_name, font_size_bin + 16)  # e.g., 19
                     can.drawString(stamp_x + label_width + 30, stamp_y + font_size_first - 4, f"#{bin_number}")
@@ -210,6 +210,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     if is_pickup and current_first_name:
                         can.setFont(font_name, font_size_first)
                         can.drawString(0.40 * inch, 4.72 * inch, f"****{current_first_name}****")
+
                 else:
                     skipped_pages.append((page_index, current_buyer or "unknown"))
                     can.setFont(font_name, font_size_app)
@@ -218,7 +219,6 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     text_width = can.stringWidth(app_label, font_name, font_size_app)
                     can.setFont(font_name, font_size_default)
                     can.drawString(stamp_x + text_width + 10, stamp_y + font_size_first + 4, "Givvy or Flash Sale?")
-                    
 
                 can.save()
                 packet.seek(0)
