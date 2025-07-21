@@ -454,7 +454,7 @@ class SwiftSaleGUI(QMainWindow):
 
     def update_bins_used_display(self):
         try:
-            bins_used = self.bidder_manager.count_user_bins()
+            bins_used = self.bidder_manager.count_total_bins_assigned()
             max_bins = TIER_LIMITS.get(self.tier, {}).get("bins", 20)
             usage_ratio = bins_used / max_bins if max_bins else 0
             self.bins_used_label.setStyleSheet(

@@ -242,7 +242,7 @@ class BidderManager:
             self.conn.rollback()
             raise
 
-    def count_user_bins(self) -> int:
+    def count_total_bins_assigned(self) -> int:
         """Count distinct usernames that have a bin assigned."""
         try:
             cursor = self.conn.cursor()

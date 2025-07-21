@@ -301,7 +301,7 @@ class CloudDatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT email, expires_at, used, assigned_to, device_id
+                    SELECT email, expires_at, used, assigned_to, device_id, tier, license_key
                     FROM dev_codes
                     WHERE code = %s
                 """, (code,))
@@ -310,19 +310,23 @@ class CloudDatabaseManager:
                     self.log_info(f"Dev code {code} not found")
                     raise RuntimeError("Invalid or expired developer code. Try again or contact support.")
 
-                email, expires_at, used, assigned_to, bound_device = (
-                    row['email'], row['expires_at'], row['used'], row['assigned_to'], row['device_id']
+                email, expires_at, used, assigned_to, bound_device, tier, license_key = (
+                    row['email'], row['expires_at'], row['used'],
+                    row['assigned_to'], row['device_id'],
+                    row.get('tier') or 'Gold',
+                    row.get('license_key') or 'DEV_MODE'
                 )
 
                 now = datetime.now(timezone.utc)
+
+                if expires_at and now > expires_at:
+                    self.log_info(f"Dev code {code} expired on {expires_at}")
+                    raise RuntimeError("Developer code expired. Try again or contact support.")
 
                 if used:
                     if assigned_to != user_email or bound_device != device_id:
                         self.log_info(f"Dev code {code} rejected: bound to {assigned_to}/{bound_device}")
                         raise RuntimeError("Developer code already in use on another device or email.")
-                    if expires_at and now > expires_at:
-                        self.log_info(f"Dev code {code} expired on {expires_at}")
-                        raise RuntimeError("Developer code expired. Try again or contact support.")
                 else:
                     from datetime import timedelta
                     expires = None if code.lower() == "brandi9933" else now + timedelta(hours=48)
@@ -334,10 +338,13 @@ class CloudDatabaseManager:
                     conn.commit()
                     self.log_info(f"Assigned dev code {code} to {user_email}/{device_id}")
 
-                return {"tier": "Gold", "license_key": "DEV_MODE"}
+                return {
+                    "tier": tier,
+                    "license_key": license_key
+                }
 
         except RuntimeError:
-            raise  # Reraise clean user-level errors directly
+            raise
         except Exception as e:
             self.log_error(f"Failed to validate dev code {code}: {e}", exc_info=True)
             raise RuntimeError("An unexpected error occurred while validating your developer code.")
