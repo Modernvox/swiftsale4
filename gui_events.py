@@ -148,33 +148,41 @@ def on_username_changed(self):
 def open_dev_code_dialog(self):
     """Prompt user to enter the developer unlock code."""
     code, ok = QInputDialog.getText(self, "Enter Dev Code", "Enter Developer Code:")
-    if ok and code.strip():
-        if os.getenv("FLASK_ENV", "production").lower() != "production":
-            # Bypass cloud check in dev mode
-            self.dev_access_granted = True
-            self.tier = "Gold"
-            self.license_key = "DEV_MODE"
-            self.log_info("⚠ Dev mode: Bypassing cloud check. Granting Gold tier.")
-            QMessageBox.information(self, "Dev Mode", "✔ Dev Mode – Gold Tier unlocked.")
-            self.update_subscription_ui()
-            return
+    if not (ok and code.strip()):
+        return
 
-        try:
-            cloud = CloudDatabaseManager(self.log_info, self.log_error)
-            device_id = self.install_id or "unknown-device"
-            result = cloud.validate_dev_code(code.strip(), self.user_email, device_id)
+    code = code.strip()
+    install_id = self.install_id or "unknown-device"
 
-            self.dev_access_granted = True
-            self.tier = result.get("tier", "Gold")
-            self.license_key = result.get("license_key", "DEV_MODE")
+    # Define your authorized dev install IDs here
+    authorized_dev_ids = {"DEV1234", "ABC9999", "XYZDEV1"}  # Replace with your actual install_id
 
-            self.log_info("✅ Developer access granted via cloud validation")
-            QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
-            self.update_subscription_ui()
+    # If this machine is dev-authorized, bypass the cloud check
+    if install_id in authorized_dev_ids:
+        self.dev_access_granted = True
+        self.tier = "Gold"
+        self.license_key = "DEV_MODE"
+        self.log_info(f"✔ Dev Mode Unlocked – install_id {install_id} is authorized locally.")
+        QMessageBox.information(self, "Dev Mode", "✔ Dev Mode – Gold Tier unlocked.")
+        self.update_subscription_ui()
+        return
 
-        except Exception as e:
-            self.log_error(f"Dev code validation failed: {e}")
-            QMessageBox.warning(self, "Access Denied", str(e))
+    try:
+        from cloud_database_qt import CloudDatabaseManager
+        cloud = CloudDatabaseManager(self.log_info, self.log_error)
+        result = cloud.validate_dev_code(code, self.user_email, install_id)
+
+        self.dev_access_granted = True
+        self.tier = result.get("tier", "Gold")
+        self.license_key = result.get("license_key", "DEV_MODE")
+
+        self.log_info(f"✅ Developer access granted via cloud for install_id={install_id}")
+        QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
+        self.update_subscription_ui()
+
+    except Exception as e:
+        self.log_error(f"Dev code validation failed: {e}")
+        QMessageBox.warning(self, "Access Denied", str(e))
 
 def on_upgrade(self):
     """Handle clicking the Upgrade button in the Subscription tab with real-time refresh."""

@@ -76,17 +76,29 @@ class SwiftSaleGUI(QMainWindow):
         config = load_config()
         install_config = load_install_info()
 
+        # Normalize environment
+        self.env = os.getenv("FLASK_ENV", config.get("FLASK_ENV", "production")).lower()
+
+        # Force production if running as frozen .exe
+        import sys
+        if getattr(sys, 'frozen', False):
+            self.env = "production"
+            self.log_info("Forced production mode due to frozen .exe build")
+
+        self.is_dev_mode = self.env != "production"
+        self.log_info(f"Environment: {self.env} | is_dev_mode: {self.is_dev_mode}")
+
         # Load from local JSON first
         self.user_email = install_config.get('email', '') or config.get('email', '') or user_email
         self.install_id = install_config.get('install_id', '')
         self.tier = install_config.get('tier', 'Trial')
         self.license_key = ""
 
-        # Determine if we should verify
+        # Determine if we should verify subscription
         should_verify = self.user_email and "@" in self.user_email and not self.user_email.startswith("trial@")
 
         # Production cloud sync
-        if config.get('FLASK_ENV') == 'production':
+        if self.env == 'production':
             try:
                 self.cloud_db = CloudDatabaseManager(log_info, log_error)
                 if should_verify:
@@ -103,9 +115,6 @@ class SwiftSaleGUI(QMainWindow):
             except Exception as e:
                 self.log_error(f"Cloud sync failed: {e}")
                 self.cloud_db = None
-
-        self.is_dev_mode = os.getenv("FLASK_ENV", "production").lower() != "production"
-
         # Skip verification if no email — user remains in Trial mode
         if should_verify:
             try:

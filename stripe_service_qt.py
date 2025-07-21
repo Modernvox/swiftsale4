@@ -4,7 +4,6 @@ import hashlib
 from flask import request, jsonify
 from tenacity import retry, stop_after_attempt, wait_exponential
 from config_qt import PRICE_MAP, REVERSE_PRICE_MAP, TIER_LIMITS
-from tenacity import retry, stop_after_attempt, wait_exponential
 import datetime
 
 class StripeService:
