@@ -52,7 +52,10 @@ def log_error(message, exc_info=False):
 
 # --- Explicitly set environment mode ---
 if getattr(sys, 'frozen', False):
-    # Only use production mode if DATABASE_URL is set
+    # Inject default DATABASE_URL if not already set
+    if "DATABASE_URL" not in os.environ:
+        os.environ["DATABASE_URL"] = "postgresql://msp:3c7koosbEwwK6udQ35kp16eA7itkBNVX@dpg-d1qaevvfte5s73d4h9ng-a.ohio-postgres.render.com/swiftsaleapp4_db"
+    
     if os.getenv("DATABASE_URL", "").startswith("postgres"):
         os.environ["FLASK_ENV"] = "production"
     else:
