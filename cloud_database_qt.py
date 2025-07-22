@@ -315,6 +315,10 @@ class CloudDatabaseManager:
 
                 now = datetime.now(timezone.utc)
 
+                # Ensure expires_at is timezone-aware to avoid comparison errors
+                if expires_at and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+
                 if expires_at and now > expires_at:
                     self.log_info(f"Dev code {code} expired on {expires_at}")
                     raise RuntimeError("Developer code expired. Try again or contact support.")
