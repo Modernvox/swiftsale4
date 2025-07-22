@@ -153,9 +153,13 @@ _app_config_cache = None
 
 def get_config_value(key):
     """Always prioritize live environment variables for critical keys."""
-    # Check environment variable first (especially needed for Render)
     if key in os.environ:
         return os.environ[key]
+
+    global _app_config_cache
+    if _app_config_cache is None:
+        _app_config_cache = load_config()
+    return _app_config_cache.get(key)
 
 def reload_config_cache():
     global _app_config_cache
