@@ -17,10 +17,9 @@ class CloudDatabaseManager:
 
         # DO NOT force prod mode just because app is frozen
         # This lets you test a frozen .exe locally without hitting Render
-        if env != "production":
-            self.log_info("Cloud sync skipped (non-production environment).")
-            return
-
+        if env != "production" or not os.getenv("DATABASE_URL", "").startswith("postgres"):
+            raise RuntimeError("CloudDatabaseManager is disabled or misconfigured (missing DATABASE_URL)")
+            
         self.pool = None
         self._initialize_connection_pool()
         self._ensure_schema()
