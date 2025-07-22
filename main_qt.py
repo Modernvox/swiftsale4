@@ -50,16 +50,14 @@ def log_error(message, exc_info=False):
     custom_log("ERROR", message)
 
 
-# --- Explicitly set environment mode ---
-if getattr(sys, 'frozen', False):
-    # Inject default DATABASE_URL if not already set
-    if "DATABASE_URL" not in os.environ:
-        os.environ["DATABASE_URL"] = "postgresql://msp:3c7koosbEwwK6udQ35kp16eA7itkBNVX@dpg-d1qaevvfte5s73d4h9ng-a.ohio-postgres.render.com/swiftsaleapp4_db"
-    
-    if os.getenv("DATABASE_URL", "").startswith("postgres"):
+if getattr(sys, 'frozen', False):  # Running as PyInstaller exe
+    db_url = os.getenv("DATABASE_URL", "")
+    if db_url.startswith("postgres"):
         os.environ["FLASK_ENV"] = "production"
     else:
+        # Don’t raise an error — fall back to local dev
         os.environ["FLASK_ENV"] = "development"
+        log_info("Falling back to development mode: DATABASE_URL not found or invalid.")
 else:
     os.environ["FLASK_ENV"] = "development"
 
