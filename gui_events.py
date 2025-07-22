@@ -163,7 +163,7 @@ def open_dev_code_dialog(self):
         self.tier = result.get("tier", "Gold")
         self.license_key = result.get("license_key", "DEV_MODE")
 
-        self.log_info(f"✅ Developer access granted via cloud for install_id={install_id}")
+        self.log_info(f" Developer access granted via cloud for install_id={install_id}")
         QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
 
         self.update_subscription_ui()
@@ -270,11 +270,11 @@ def _poll_subscription_status(self, expected_tier, max_retries=24, delay=5):
                         license_key=self.license_key
                     )
                 except Exception as e:
-                    self.log_error(f"❌ Stripe upgrade_subscription failed: {e}")
+                    self.log_error(f" Stripe upgrade_subscription failed: {e}")
 
                 QTimer.singleShot(0, self.update_subscription_ui)
                 QTimer.singleShot(0, lambda: self.polling_dialog.cancel())
-                QTimer.singleShot(0, lambda: self.show_temporary_message(f"✅ Subscription upgraded to {self.tier}"))
+                QTimer.singleShot(0, lambda: self.show_temporary_message(f" Subscription upgraded to {self.tier}"))
                 return
 
         self.log_info("⌛ Upgrade not detected after polling timeout.")
@@ -282,7 +282,7 @@ def _poll_subscription_status(self, expected_tier, max_retries=24, delay=5):
 
     except Exception as e:
         tb = traceback.format_exc()
-        self.log_error(f"❌ _poll_subscription_status failed:\n{tb}")
+        self.log_error(f" _poll_subscription_status failed:\n{tb}")
         QTimer.singleShot(0, lambda: self.polling_dialog.cancel())
         QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Upgrade Error", f"An error occurred:\n{str(e)}"))
 

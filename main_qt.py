@@ -212,7 +212,7 @@ def main():
                 install_info["tier"] = "Gold"
                 save_install_info(install_info)
                 tier = "Gold"
-                log_info(f"✅ Gold tier granted for {user_email}")
+                log_info(f" Gold tier granted for {user_email}")
             cloud_db_check.close()
     except Exception as e:
         log_error(f"Gold tier check failed: {e}")

@@ -152,7 +152,7 @@ def load_config():
             config["STRIPE_WEBHOOK_SECRET"] = fernet.decrypt(enc_webhook.encode()).decode()
         except Exception as e:
             logger.critical(f"Fernet decryption failed: {e}")
-            raise RuntimeError("❌ Critical: Unable to decrypt Stripe keys.")
+            raise RuntimeError(" Critical: Unable to decrypt Stripe keys.")
     else:
         config["STRIPE_SECRET_KEY"] = os.getenv("STRIPE_SECRET_KEY")
         config["STRIPE_WEBHOOK_SECRET"] = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -167,7 +167,7 @@ def load_config():
         ]
         for key in required:
             if not config.get(key):
-                raise RuntimeError(f"❌ Missing required env var in production: {key}")
+                raise RuntimeError(f" Missing required env var in production: {key}")
 
     # Success/cancel URL for Stripe
     config["SUCCESS_URL"] = f"{config['APP_BASE_URL']}/success"
