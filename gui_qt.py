@@ -65,7 +65,6 @@ class SwiftSaleGUI(QMainWindow):
         self.stripe_service = stripe_service
         self.api_token = api_token.strip()
         self.base_url = base_url
-        self.dev_unlock_code = dev_unlock_code
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
         self.cloud_db = None
