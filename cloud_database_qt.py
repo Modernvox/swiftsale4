@@ -314,67 +314,35 @@ class CloudDatabaseManager:
             if conn:
                 self._put_connection(conn)
 
-    def validate_dev_code(self, code, user_email, device_id):
-        """Validate a developer code and assign it if valid."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT email, expires_at, used, assigned_to, device_id, tier, license_key
-                    FROM dev_codes
-                    WHERE code = %s
-                """, (code,))
-                row = cur.fetchone()
-                if not row:
-                    self.log_info(f"Dev code {code} not found")
-                    raise RuntimeError("Invalid or expired developer code. Try again or contact support.")
-
-                email, expires_at, used, assigned_to, bound_device, tier, license_key = (
-                    row['email'], row['expires_at'], row['used'],
-                    row['assigned_to'], row['device_id'],
-                    row.get('tier') or 'Gold',
-                    row.get('license_key') or 'DEV_MODE'
-                )
-
-                now = datetime.now(timezone.utc)
-
-                # Ensure expires_at is timezone-aware to avoid comparison errors
-                if expires_at and expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-                if expires_at and now > expires_at:
-                    self.log_info(f"Dev code {code} expired on {expires_at}")
-                    raise RuntimeError("Developer code expired. Try again or contact support.")
-
-                if used:
-                    if assigned_to != user_email or bound_device != device_id:
-                        self.log_info(f"Dev code {code} rejected: bound to {assigned_to}/{bound_device}")
-                        raise RuntimeError("Developer code already in use on another device or email.")
-                else:
-                    from datetime import timedelta
-                    expires = None if code.lower() == "brandi9933" else now + timedelta(hours=48)
+    def validate_dev_code(self, code: str) -> dict:
+        with self.pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
                     cur.execute("""
-                        UPDATE dev_codes
-                        SET used = TRUE, assigned_to = %s, device_id = %s, expires_at = %s
+                        SELECT code, email, used, expires_at, tier, license_key, frozen, assigned_to
+                        FROM dev_codes
                         WHERE code = %s
-                    """, (user_email, device_id, expires, code))
-                    conn.commit()
-                    self.log_info(f"Assigned dev code {code} to {user_email}/{device_id}")
+                    """, (code,))
+                    row = cur.fetchone()
+                    if not row:
+                        raise ValueError("Invalid or unreachable developer code.")
+                    
+                    if row[2]:  # used
+                        raise ValueError("Developer code already used.")
+                    if row[6]:  # frozen
+                        raise ValueError("Developer code is frozen.")
+                    if row[3] and row[3] < datetime.utcnow():
+                        raise ValueError("Developer code expired.")
 
-                return {
-                    "tier": tier,
-                    "license_key": license_key
-                }
+                    # Return usable dev info
+                    return {
+                        "tier": row[4] or "Gold",
+                        "license_key": row[5] or "DEV_MODE",
+                        "email": row[1] or "dev@swiftsaleapp.com"
+                    }
 
-        except RuntimeError:
-            raise
-        except Exception as e:
-            self.log_error(f"Failed to validate dev code {code}: {e}", exc_info=True)
-            raise RuntimeError("An unexpected error occurred while validating your developer code.")
-        finally:
-            if conn:
-                self._put_connection(conn)
+            finally:
+                self.pool.putconn(conn)
 
     def sync_with_local(self, bidder_manager, user_email):
         """Sync cloud subscription and install data with local BidderManager."""
