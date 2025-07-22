@@ -76,7 +76,9 @@ def load_config():
     """Load all critical app settings, enforce strict secret validation in production."""
     ensure_data_dir()
 
-    env = os.getenv("FLASK_ENV", "development").lower()
+    env = os.getenv("ENV", "development").lower()
+    logger.debug(f"Running in environment: {env}")
+
 
     config = {
         "FLASK_ENV": env,
