@@ -300,6 +300,17 @@ def main():
 
     gui.cloud_db = cloud_db
     gui.telegram_service = telegram_service
+
+    # Sync cloud install info (tier/license) into local
+    if cloud_db and user_email:
+        try:
+            cloud_db.sync_with_local(bidder_manager, user_email)
+            log_info(f"[SYNC] Synced cloud tier for {user_email}")
+            install_info = get_or_create_install_info()  # Reload updated tier info
+            gui.show_toast(f"✔ License Verified – {install_info.get('tier', 'Trial')} Tier")
+        except Exception as e:
+            log_error(f"Cloud sync failed for {user_email}: {e}")
+
     gui.show()
 
     def on_closing():
