@@ -139,21 +139,21 @@ class FlaskServer:
 
         @self.app.route('/create-checkout-session', methods=['POST'])
         def create_checkout_session():
-           db_url = os.getenv("DATABASE_URL")
-           if not db_url or not db_url.startswith("postgres"):
-               return json_error("DATABASE_URL not set or invalid.", 403)
+            db_url = os.getenv("DATABASE_URL")
+            if not db_url or not db_url.startswith("postgres"):
+                return json_error("DATABASE_URL not set or invalid.", 403)
 
-           data = request.get_json() or {}
-           tier = data.get('tier')
-           user_email = data.get('user_email')
-           if not tier or not user_email:
-               return json_error("Missing tier or user_email", 400)
-          try:
-               session, status = self.stripe_service.create_checkout_session(tier, user_email, request.url_root)
-               return json_success(session, status)
-          except Exception as e:
-              self.logger.error(f"Stripe session error: {e}", exc_info=True, extra={"request_id": g.request_id})
-              return json_error(str(e), 500)
+            data = request.get_json() or {}
+            tier = data.get('tier')
+            user_email = data.get('user_email')
+            if not tier or not user_email:
+                return json_error("Missing tier or user_email", 400)
+            try:
+                session, status = self.stripe_service.create_checkout_session(tier, user_email, request.url_root)
+                return json_success(session, status)
+            except Exception as e:
+                self.logger.error(f"Stripe session error: {e}", exc_info=True, extra={"request_id": g.request_id})
+                return json_error(str(e), 500)
 
         @self.app.route('/subscription-status', methods=['GET'])
         def subscription_status():
