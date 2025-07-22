@@ -71,7 +71,7 @@ class FlaskServer:
             level=logging.DEBUG if self.env == "development" else logging.INFO,
             format="%(asctime)s [%(levelname)s] [RequestID: %(request_id)s] %(message)s",
             handlers=[
-                RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5),
+                RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
                 logging.StreamHandler(sys.stdout)
             ]
         )
