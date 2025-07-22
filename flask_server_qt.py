@@ -35,10 +35,14 @@ def json_error(message, status=400):
     return jsonify({"status": "error", "error": message}), status
 
 def get_db_connection():
+    """Return a PostgreSQL connection only if running on Render."""
     if os.getenv("RENDER") != "true":
-        raise RuntimeError("Attempted to access cloud DB outside of Render environment")
+        return None
     try:
         db_url = os.getenv("DATABASE_URL")
+        if not db_url or not db_url.startswith("postgres"):
+            logging.getLogger(__name__).warning("Invalid or missing DATABASE_URL on Render")
+            return None
         parsed_url = urlparse(db_url)
         return psycopg2.connect(
             dbname=parsed_url.path[1:],
@@ -46,11 +50,10 @@ def get_db_connection():
             password=parsed_url.password,
             host=parsed_url.hostname,
             port=parsed_url.port
-        )    
-
+        )
     except Exception as e:
         logging.getLogger(__name__).error(f"Database connection error: {e}", exc_info=True)
-        raise
+        return None
 
 class FlaskServer:
     def __init__(self, port, stripe_service, api_token: str,
@@ -62,7 +65,7 @@ class FlaskServer:
         self.api_token = os.getenv("API_TOKEN", api_token)
         self.secret_key = os.getenv("SECRET_KEY", secret_key)
         user_data_dir = os.getenv("RENDER_DATA_DIR", "/opt/render/project/swiftsale_data" if os.getenv("RENDER") == "true" else
-                                 os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp'))
+                                  os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp'))
 
         os.makedirs(user_data_dir, exist_ok=True)
         log_file = os.path.join(user_data_dir, "swiftsale_flask_server.log")
@@ -195,6 +198,12 @@ class FlaskServer:
         def register_install():
             if os.getenv("RENDER") != "true":
                 return json_error("Install registration only available in cloud environment", 403)
+
+            conn = get_db_connection()
+            if not conn:
+                self.logger.error("Cloud database connection unavailable")
+                return json_error("Cloud database connection unavailable", 500)
+
             try:
                 data = request.get_json() or {}
                 email = data.get('email')
@@ -203,24 +212,32 @@ class FlaskServer:
                 email = email.strip().lower()
                 if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
                     return json_error("Invalid email address", 400)
+
                 hashed_email = hashlib.sha256(email.encode()).hexdigest()
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT install_id, tier FROM installs WHERE hashed_email = %s", (hashed_email,))
-                        existing_install = cur.fetchone()
-                        if existing_install:
-                            self.logger.info(f"Existing install found for hashed_email: {hashed_email}", extra={"request_id": g.request_id})
-                            return json_success({"install_id": existing_install[0], "tier": existing_install[1]}, 200)
-                        cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
-                        last_install = cur.fetchone()
-                        new_id = f"{int(last_install[0]) + 1:07d}" if last_install else "0000001"
-                        cur.execute("INSERT INTO installs (hashed_email, install_id, tier) VALUES (%s, %s, %s)", (hashed_email, new_id, "free"))
-                        conn.commit()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT install_id, tier FROM installs WHERE hashed_email = %s", (hashed_email,))
+                    existing_install = cur.fetchone()
+                    if existing_install:
+                        self.logger.info(f"Existing install found for hashed_email: {hashed_email}", extra={"request_id": g.request_id})
+                        return json_success({"install_id": existing_install[0], "tier": existing_install[1]}, 200)
+
+                    cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
+                    last_install = cur.fetchone()
+                    new_id = f"{int(last_install[0]) + 1:07d}" if last_install else "0000001"
+                    cur.execute(
+                        "INSERT INTO installs (hashed_email, install_id, tier) VALUES (%s, %s, %s)",
+                        (hashed_email, new_id, "free")
+                    )
+                    conn.commit()
+
                 self.logger.info(f"New install registered: {new_id} for hashed_email: {hashed_email}", extra={"request_id": g.request_id})
                 return json_success({"install_id": new_id, "tier": "free"}, 200)
+
             except Exception as e:
                 self.logger.error(f"Error registering install: {e}", exc_info=True, extra={"request_id": g.request_id})
                 return json_error("Internal server error", 500)
+            finally:
+                conn.close()
 
         @self.app.route('/api/validate-dev-code', methods=['GET'])
         def validate_dev_code():
@@ -241,8 +258,6 @@ class FlaskServer:
                             return json_error("Invalid or expired developer code. Try again or contact support", 404)
 
                         email, expires_at, used, assigned_to, bound_device = row
-                        now = datetime.utcnow()
-
                         if used:
                             if expires_at and datetime.utcnow() > expires_at:
                                 return json_error("Developer code expired. Contact support.", 403)
@@ -260,10 +275,8 @@ class FlaskServer:
             self.logger.info("Client connected via SocketIO", extra={"request_id": getattr(g, 'request_id', 'unknown')})
 
     def start(self):
-        """Start the Flask server using Waitress."""
         self.logger.info(f"Starting Flask server on port {self.port}")
         serve(self.app, host="0.0.0.0", port=self.port, threads=8)
-
 
     def shutdown(self):
         self.logger.info("Shutting down Flask server")
