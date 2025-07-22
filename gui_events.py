@@ -151,9 +151,29 @@ def open_dev_code_dialog(self):
     if not (ok and code.strip()):
         return
 
-    code = code.strip()
+    code = code.strip().lower()
     install_id = self.install_id or "unknown-device"
 
+    # ✅ Local fallback codes always accepted
+    local_fallback_codes = {
+        "devoffline": {"tier": "Gold", "license_key": "DEV_MODE"},
+        "letmein": {"tier": "Gold", "license_key": "DEV_MODE"},
+        "brandi9933": {"tier": "Gold", "license_key": "DEV_MODE"},
+    }
+
+    if code in local_fallback_codes:
+        self.dev_access_granted = True
+        self.tier = local_fallback_codes[code]["tier"]
+        self.license_key = local_fallback_codes[code]["license_key"]
+
+        self.log_info(f"Offline dev code used – {code} | install_id={install_id}")
+        QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
+        self.update_subscription_ui()
+        self.update_header_and_footer()
+        self.refresh_bin_usage_display()
+        return
+
+    # ✅ Try cloud if possible
     try:
         from cloud_database_qt import CloudDatabaseManager
         cloud = CloudDatabaseManager(self.log_info, self.log_error)
@@ -163,16 +183,15 @@ def open_dev_code_dialog(self):
         self.tier = result.get("tier", "Gold")
         self.license_key = result.get("license_key", "DEV_MODE")
 
-        self.log_info(f" Developer access granted via cloud for install_id={install_id}")
+        self.log_info(f"Dev access granted via cloud for install_id={install_id}")
         QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
-
         self.update_subscription_ui()
         self.update_header_and_footer()
         self.refresh_bin_usage_display()
 
     except Exception as e:
         self.log_error(f"Dev code validation failed: {e}")
-        QMessageBox.warning(self, "Access Denied", str(e))
+        QMessageBox.warning(self, "Access Denied", "Invalid or unreachable developer code.")
 
 def on_upgrade(self):
     """Handle clicking the Upgrade button in the Subscription tab with real-time refresh."""
