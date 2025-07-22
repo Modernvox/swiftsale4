@@ -98,6 +98,14 @@ def load_config():
     enc_secret = os.getenv("ENCRYPTED_STRIPE_SECRET_KEY", "")
     enc_webhook = os.getenv("ENCRYPTED_STRIPE_WEBHOOK_SECRET", "")
 
+    logger = logging.getLogger("config_qt_debug")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler())
+
+    logger.debug(f"FERNET_KEY: {bool(fernet_key)}")
+    logger.debug(f"ENCRYPTED_STRIPE_SECRET_KEY: {bool(enc_secret)}")
+    logger.debug(f"ENCRYPTED_STRIPE_WEBHOOK_SECRET: {bool(enc_webhook)}")
+
     if fernet_key:
         try:
             fernet = Fernet(fernet_key.encode())
