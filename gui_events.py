@@ -154,19 +154,6 @@ def open_dev_code_dialog(self):
     code = code.strip()
     install_id = self.install_id or "unknown-device"
 
-    # Define your authorized dev install IDs here
-    authorized_dev_ids = {"DEV1234", "ABC9999", "XYZDEV1"}  # Replace with your actual install_id
-
-    # If this machine is dev-authorized, bypass the cloud check
-    if install_id in authorized_dev_ids:
-        self.dev_access_granted = True
-        self.tier = "Gold"
-        self.license_key = "DEV_MODE"
-        self.log_info(f"✔ Dev Mode Unlocked – install_id {install_id} is authorized locally.")
-        QMessageBox.information(self, "Dev Mode", "✔ Dev Mode – Gold Tier unlocked.")
-        self.update_subscription_ui()
-        return
-
     try:
         from cloud_database_qt import CloudDatabaseManager
         cloud = CloudDatabaseManager(self.log_info, self.log_error)
@@ -178,7 +165,10 @@ def open_dev_code_dialog(self):
 
         self.log_info(f"✅ Developer access granted via cloud for install_id={install_id}")
         QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
+
         self.update_subscription_ui()
+        self.update_header_and_footer()
+        self.refresh_bin_usage_display()
 
     except Exception as e:
         self.log_error(f"Dev code validation failed: {e}")

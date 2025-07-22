@@ -17,7 +17,7 @@ from bidder_manager_qt import BidderManager
 from flask_server_qt import FlaskServer
 from gui_qt import SwiftSaleGUI
 from stripe_service_qt import StripeService
-from config_qt import load_config, DEFAULT_TRIAL_EMAIL
+from config_qt import load_config, DEFAULT_TRIAL_EMAIL, get_or_create_install_info, save_install_info
 
 load_dotenv()
 
@@ -200,6 +200,23 @@ def wait_for_server(url, timeout=30):
 
 def main():
     log_info("Starting SwiftSale GUI")
+    install_info = get_or_create_install_info()
+    user_email = install_info.get("email", "trial@swiftsaleapp.com")
+    install_id = install_info.get("install_id", "unknown-device")
+    tier = install_info.get("tier", "Trial")
+
+    try:
+        if os.getenv("FLASK_ENV") == "production":
+            cloud_db_check = CloudDatabaseManager(log_info=log_info, log_error=log_error)
+            if cloud_db_check.is_gold_email(user_email, install_id):
+                install_info["tier"] = "Gold"
+                save_install_info(install_info)
+                tier = "Gold"
+                log_info(f"✅ Gold tier granted for {user_email}")
+            cloud_db_check.close()
+    except Exception as e:
+        log_error(f"Gold tier check failed: {e}")
+
     config = load_config()
 
     redacted = {k: ("<REDACTED>" if any(x in k for x in ["KEY", "TOKEN", "SECRET"]) else v) for k, v in config.items()}
@@ -267,7 +284,7 @@ def main():
     gui = SwiftSaleGUI(
         stripe_service=stripe_service,  # Pass stripe_service instead of None
         api_token=config["API_TOKEN"],
-        user_email = config.get("USER_EMAIL", "").strip() or DEFAULT_TRIAL_EMAIL,
+        user_email=user_email,
         base_url=config["APP_BASE_URL"],
         dev_unlock_code = config.get("DEV_UNLOCK_CODE", ""),
         telegram_bot_token=config.get("TELEGRAM_BOT_TOKEN", ""),

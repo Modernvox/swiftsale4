@@ -132,6 +132,31 @@ class CloudDatabaseManager:
             if conn:
                 self._put_connection(conn)
 
+    def is_gold_email(self, user_email, install_id):
+        """Check if the given email and install_id have Gold tier."""
+        conn = None
+        try:
+            import hashlib
+            hashed_email = hashlib.sha256(user_email.encode()).hexdigest()
+            conn = self._get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tier FROM installs
+                    WHERE hashed_email = %s AND install_id = %s
+                """, (hashed_email, install_id))
+                row = cur.fetchone()
+                if row and row['tier'].lower() == 'gold':
+                    self.log_info(f"Gold tier verified for {user_email}")
+                    return True
+                return False
+        except Exception as e:
+            self.log_error(f"Error checking gold tier for {user_email}: {e}", exc_info=True)
+            return False
+        finally:
+            if conn:
+                self._put_connection(conn)
+
+
     def get_last_install(self):
         """Fetch the last install record by install_id."""
         conn = None

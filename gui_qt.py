@@ -466,6 +466,30 @@ class SwiftSaleGUI(QMainWindow):
             self.log_error(f"Failed to update bins used display: {e}")
             self.bins_used_label.setText("Bins Used: Error")
 
+    def refresh_bin_usage_display(self):
+        """Refresh both bin usage label and footer display."""
+        try:
+            self.update_bins_used_display()  # <- THIS updates the "Bins Used: X/Y" label
+
+            # Then update the footer
+            bins_used = self.bidder_manager.count_total_bins_assigned()
+            max_bins = TIER_LIMITS.get(self.tier, {}).get("bins", 20)
+            shield = "🛡️"
+            color = {
+                "Trial": "#CCCCCC",
+                "Bronze": "#cd7f32",
+                "Silver": "#c0c0c0",
+                "Gold": "#ffd700"
+            }.get(self.tier, "#FFFFFF")
+
+            self.footer_label.setText(f"{shield} {self.tier} | Bins Used: {bins_used}/{max_bins} | Install ID: {self.install_id}")
+            self.footer_label.setStyleSheet(f"color: {color}")
+            self.footer_label.setToolTip(f"Install ID: {self.install_id} – {self.tier} Tier")
+            self.log_info(f"Refreshed bin usage: {bins_used}/{max_bins}")
+
+        except Exception as e:
+            self.log_error(f"Failed to refresh bin usage: {e}")
+
     def update_latest_bidder_display(self):
         """Update the latest bidder display."""
         try:
@@ -544,13 +568,35 @@ class SwiftSaleGUI(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to clear bidders: {e}")
 
     def update_header_and_footer(self):
-        """Update header and footer labels."""
+        """Update header and footer labels with tier color, install ID, and bin info."""
         try:
+            tier_colors = {
+                "Trial": "#CCCCCC",
+                "Bronze": "#cd7f32",
+                "Silver": "#c0c0c0",
+                "Gold": "#ffd700"
+            }
+            color = tier_colors.get(self.tier, "#FFFFFF")
+            shield = "🛡️"
+
+            # Header: User email, tier, and slogan
             self.header_label.setText(f"SwiftSale - {self.user_email} ({self.tier}) | Build Whatnot Orders in Realtime")
-            self.footer_label.setText(f"SwiftSale - {self.tier} Tier - Latest Bin: {self.latest_bin_assignment}")
-            self.log_info("Updated header and footer labels")
+
+            # Footer: Tier, Install ID, and latest bin
+            self.footer_label.setText(f"{shield} {self.tier} | Install ID: {self.install_id} | Latest Bin: {self.latest_bin_assignment}")
+            self.footer_label.setStyleSheet(f"color: {color}")
+            self.footer_label.setToolTip(f"Install ID: {self.install_id} – {self.tier} Tier")
+
+            # Settings tab license label
+            if hasattr(self, "license_status_label"):
+                self.license_status_label.setText(f"{shield} License Verified – {self.tier} Tier")
+                self.license_status_label.setStyleSheet(f"color: {color}")
+                self.license_status_label.setToolTip(f"Install ID: {self.install_id}")
+
+            self.log_info("Updated header, footer, and license label")
+
         except Exception as e:
-            self.log_error(f"Failed to update header/footer: {e}")
+            self.log_error(f"Failed to update header/footer/license: {e}")
 
     def on_annotate_labels_clicked(self):
         """Annotate Whatnot labels with bin numbers."""

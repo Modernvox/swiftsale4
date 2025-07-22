@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import logging
+import uuid
 from cryptography.fernet import Fernet
 
 INSTALL_INFO_PATH = os.path.join(
@@ -31,6 +32,38 @@ def save_install_info(email, install_id, tier):
             json.dump(data, f, indent=2)
     except Exception as e:
         print(f"Failed to save install info: {e}")
+
+def get_or_create_install_info():
+    """Ensure install_info.json exists and has install_id, email, and tier."""
+    if not os.path.exists(INSTALL_INFO_PATH):
+        os.makedirs(os.path.dirname(INSTALL_INFO_PATH), exist_ok=True)
+        install_id = str(uuid.uuid4())[:8]  # short UUID
+        info = {
+            "email": "trial@swiftsaleapp.com",
+            "install_id": install_id,
+            "tier": "Trial"
+        }
+        with open(INSTALL_INFO_PATH, "w") as f:
+            json.dump(info, f, indent=2)
+        return info
+
+    # Patch older versions if needed
+    info = load_install_info()
+    changed = False
+    if not info.get("install_id"):
+        info["install_id"] = str(uuid.uuid4())[:8]
+        changed = True
+    if not info.get("email"):
+        info["email"] = "trial@swiftsaleapp.com"
+        changed = True
+    if not info.get("tier"):
+        info["tier"] = "Trial"
+        changed = True
+
+    if changed:
+        save_install_info(info["email"], info["install_id"], info["tier"])
+
+    return info
 
 # ─── LOGGING SETUP ────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
