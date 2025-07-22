@@ -76,7 +76,11 @@ def load_config():
     """Load all critical app settings, enforce strict secret validation in production."""
     ensure_data_dir()
 
-    env = os.getenv("ENV", "development").lower()
+    logger = logging.getLogger("config_qt_debug")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler())
+
+    env = os.getenv("FLASK_ENV", "development").lower()
     logger.debug(f"Running in environment: {env}")
 
 
