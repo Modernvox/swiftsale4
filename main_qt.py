@@ -20,7 +20,7 @@ from stripe_service_qt import StripeService
 from config_qt import load_config, DEFAULT_TRIAL_EMAIL, get_or_create_install_info, save_install_info
 
 load_dotenv()
-
+app = QApplication.instance() or QApplication(sys.argv)
 qt_dir = os.path.abspath(os.path.dirname(__file__))
 user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
 os.makedirs(user_data_dir, exist_ok=True)
@@ -203,20 +203,26 @@ def main():
     log_info("Starting SwiftSale GUI")
     install_info = get_or_create_install_info()
     user_email = install_info.get("email", "trial@swiftsaleapp.com")
-    install_id = install_info.get("install_id", "unknown-device")
-    tier = install_info.get("tier", "Trial")
 
-    try:
-        if os.getenv("FLASK_ENV") == "production":
-            cloud_db_check = CloudDatabaseManager(log_info=log_info, log_error=log_error)
-            if cloud_db_check.is_gold_email(user_email, install_id):
-                install_info["tier"] = "Gold"
-                save_install_info(install_info)
-                tier = "Gold"
-                log_info(f" Gold tier granted for {user_email}")
-            cloud_db_check.close()
-    except Exception as e:
-        log_error(f"Gold tier check failed: {e}")
+    # Prompt for real email if still using default trial email
+    if user_email == "trial@swiftsaleapp.com":
+        from PySide6.QtWidgets import QInputDialog
+        email, ok = QInputDialog.getText(None, "Enter Your Email", "Please enter your SwiftSale email:")
+        if ok and email:
+            user_email = email.strip().lower()
+            install_info["email"] = user_email
+            save_install_info(user_email, install_info.get("install_id"), install_info.get("tier"))
+            log_info(f"User email set to: {user_email}")
+
+            # Auto-update installs table with hashed_email -> tier mapping
+            try:
+                if os.getenv("FLASK_ENV") == "production":
+                    cloud_db_tmp = CloudDatabaseManager(log_info=log_info, log_error=log_error)
+                    cloud_db_tmp.sync_with_local(bidder_manager, user_email)
+                    cloud_db_tmp.close()
+                    log_info(f"Synced installs tier for {user_email} after email prompt")
+            except Exception as e:
+                log_error(f"Initial sync failed after setting email: {e}")
 
     config = load_config()
 
@@ -280,8 +286,7 @@ def main():
     )
     threading.Thread(target=flask_server.start, daemon=True).start()
     wait_for_server(f"http://localhost:{port}/health")
-
-    app = QApplication(sys.argv)
+ 
     gui = SwiftSaleGUI(
         stripe_service=stripe_service,  # Pass stripe_service instead of None
         api_token=config["API_TOKEN"],
@@ -305,9 +310,11 @@ def main():
     if cloud_db and user_email:
         try:
             cloud_db.sync_with_local(bidder_manager, user_email)
-            log_info(f"[SYNC] Synced cloud tier for {user_email}")
-            install_info = get_or_create_install_info()  # Reload updated tier info
-            gui.show_toast(f"✔ License Verified – {install_info.get('tier', 'Trial')} Tier")
+            tier = bidder_manager.get_tier_for_user(user_email)
+            install_info["tier"] = tier
+            save_install_info(user_email, install_info.get("install_id"), tier)
+            log_info(f"[SYNC] Synced and saved cloud tier '{tier}' for {user_email}")
+            gui.show_toast(f"✔ License Verified – {tier} Tier")
         except Exception as e:
             log_error(f"Cloud sync failed for {user_email}: {e}")
 

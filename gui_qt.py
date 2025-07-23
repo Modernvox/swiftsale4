@@ -87,11 +87,18 @@ class SwiftSaleGUI(QMainWindow):
         self.is_dev_mode = self.env != "production"
         self.log_info(f"Environment: {self.env} | is_dev_mode: {self.is_dev_mode}")
 
-        # Load from local JSON first
+        # Load email, install ID, tier from local JSON or fallback config
         self.user_email = install_config.get('email', '') or config.get('email', '') or user_email
         self.install_id = install_config.get('install_id', '')
         self.tier = install_config.get('tier', 'Trial')
         self.license_key = ""
+
+        # If no email, prompt the user now
+        if not self.user_email:
+            self.user_email = self.prompt_for_email()
+            if self.user_email:
+                save_install_info(self.user_email, self.install_id, self.tier)
+                self.log_info(f"User entered email: {self.user_email}")
 
         # Determine if we should verify subscription
         should_verify = self.user_email and "@" in self.user_email and not self.user_email.startswith("trial@")
@@ -108,31 +115,21 @@ class SwiftSaleGUI(QMainWindow):
                         self.tier = cloud_install['tier']
                         self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
                         save_install_info(self.user_email, self.install_id, self.tier)
-                        self.log_info(f"Synced install from cloud: {self.user_email}, ID: {self.install_id}, Tier: {self.tier}")
+                        self.log_info(f"✅ Synced install from cloud: {self.user_email}, ID: {self.install_id}, Tier: {self.tier}")
                     else:
                         self.log_info(f"No cloud record found for {self.user_email}, using local data")
-            except Exception as e:
-                self.log_error(f"Cloud sync failed: {e}")
-                self.cloud_db = None
-        # Skip verification if no email — user remains in Trial mode
-        if should_verify:
-            try:
-                self.tier, self.license_key = self.stripe_service.verify_subscription(self.user_email, self.tier, self.install_id)
-                if self.tier != install_config.get('tier'):
-                    hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
-                    self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-                    save_install_info(self.user_email, self.install_id, self.tier)
-                    if self.cloud_db:
-                        self.cloud_db.update_install_tier(hashed_email, self.tier)
-                    self.log_info(f"Updated tier to {self.tier} for {self.user_email}")
-            except Exception as e:
-                self.log_error(f"Failed to verify subscription: {e}")
-                self.tier = "Trial"
-                self.license_key = ""
 
-        # If no email, we prompt in GUI — not here
-        if not self.user_email:
-            self.log_info("No email detected — starting in Trial mode.")
+                    # Only verify with Stripe if tier is still Trial
+                    if self.tier.lower() == "trial":
+                        self.tier, self.license_key = self.stripe_service.verify_subscription(self.user_email, self.tier, self.install_id)
+                        if self.tier != install_config.get('tier'):
+                            self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+                            save_install_info(self.user_email, self.install_id, self.tier)
+                            self.cloud_db.update_install_tier(hashed_email, self.tier)
+                            self.log_info(f"⬆️ Stripe fallback: Updated tier to {self.tier} for {self.user_email}")
+            except Exception as e:
+                self.log_error(f"Cloud sync or Stripe fallback failed: {e}")
+                self.cloud_db = None
 
 
         self.telegram_service = None
@@ -220,7 +217,7 @@ class SwiftSaleGUI(QMainWindow):
         """Show dialog to collect user email."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Enter Email")
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(dialog)
         label = QLabel("Please enter your email address:")
         email_input = QLineEdit()
         submit_button = QPushButton("Submit")
@@ -229,14 +226,19 @@ class SwiftSaleGUI(QMainWindow):
         layout.addWidget(submit_button)
         dialog.setLayout(layout)
 
+        result = {}
+
         def on_submit():
             email = email_input.text().strip()
             if '@' in email:
+                result["email"] = email
                 dialog.accept()
-                return email
             else:
                 label.setText("Invalid email address. Please try again:")
 
+        submit_button.clicked.connect(on_submit)
+        dialog.exec()
+        return result.get("email", "")
 
     def open_mailing_list_dialog(self):
         from gui_mailing_list import MailingListWindow

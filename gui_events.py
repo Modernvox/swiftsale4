@@ -1,5 +1,7 @@
 from cloud_database_qt import CloudDatabaseManager
 from PySide6.QtWidgets import QMessageBox, QApplication, QInputDialog, QProgressDialog
+from config_qt import save_install_info
+
 import sqlite3
 from gui_help_qt import (
     show_telegram_help,
@@ -14,6 +16,8 @@ import hashlib
 import threading
 import time
 import os
+import psycopg2
+
 
 def start_giveaway(self):
     """Copy the giveaway message from settings to clipboard."""
@@ -167,6 +171,19 @@ def open_dev_code_dialog(self):
         self.tier = local_fallback_codes[code]["tier"]
         self.license_key = local_fallback_codes[code]["license_key"]
 
+        # Save locally
+        save_install_info(self.user_email, self.install_id, self.tier)
+        hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
+        self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+
+        # Sync to cloud if available
+        if self.cloud_db:
+            try:
+                self.cloud_db.update_install_tier(hashed_email, self.tier)
+                self.log_info(f"✅ Dev tier synced to cloud DB: {self.tier}")
+            except Exception as e:
+                self.log_error(f"Failed to sync dev tier to cloud DB: {e}")
+
         self.log_info(f"Offline dev code used – {code} | install_id={install_id}")
         QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
         self.update_subscription_ui()
@@ -179,7 +196,22 @@ def open_dev_code_dialog(self):
         self.dev_access_granted = True
         self.tier = result["tier"]
         self.license_key = result["license_key"]
-        self.log_info(f"Dev code validated via DB – {code} | {result['email']} | install_id={install_id}")
+        self.user_email = result["email"] or self.user_email
+
+        # Save locally
+        save_install_info(self.user_email, self.install_id, self.tier)
+        hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
+        self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+
+        # Sync to cloud if available
+        if self.cloud_db:
+            try:
+                self.cloud_db.update_install_tier(hashed_email, self.tier)
+                self.log_info(f"✅ Dev tier synced to cloud DB: {self.tier}")
+            except Exception as e:
+                self.log_error(f"Failed to sync dev tier to cloud DB: {e}")
+
+        self.log_info(f"Dev code validated via DB – {code} | {self.user_email} | install_id={install_id}")
         QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
         self.update_subscription_ui()
         self.update_header_and_footer()
@@ -188,44 +220,6 @@ def open_dev_code_dialog(self):
         self.log_error(f"Dev unlock failed: {e}")
         QMessageBox.warning(self, "Access Denied", str(e))
 
-
-def get_dev_db_connection():
-    return psycopg2.connect(
-        dbname='swiftsaleapp4_db',
-        user='dev_reader',
-        password='OnlyCheckDevCodes123!',  # Replace with your actual safe password
-        host='dpg-d1qaevvfte5s73d4h9ng-a.ohio-postgres.render.com',
-        port='5432',
-        sslmode='require'
-    )
-
-def validate_remote_dev_code(code: str) -> dict:
-    with get_dev_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT email, expires_at, used, assigned_to, device_id, tier, license_key, frozen
-                FROM dev_codes
-                WHERE code = %s
-            """, (code,))
-            row = cur.fetchone()
-            if not row:
-                raise ValueError("Invalid or unrecognized developer code.")
-
-            email, expires_at, used, assigned_to, bound_device, tier, license_key, frozen = row
-
-            if used:
-                raise ValueError("Code already used.")
-            if frozen:
-                raise ValueError("Code is frozen.")
-            if expires_at and datetime.utcnow() > expires_at:
-                raise ValueError("Code expired.")
-
-            return {
-                "tier": tier or "Gold",
-                "license_key": license_key or "DEV_MODE",
-                "email": email or "dev@swiftsaleapp.com"
-            }
-
 def on_upgrade(self):
     """Handle clicking the Upgrade button in the Subscription tab with real-time refresh."""
     new_tier = self.tier_combo.currentText()
@@ -233,14 +227,12 @@ def on_upgrade(self):
         QMessageBox.information(self, "Info", f"You are already on the {new_tier} tier.")
         return
 
-    if not self.user_email or not self.license_key:
-        if self.is_dev_mode:
-            QMessageBox.information(self, "Dev Mode", "Upgrade skipped — running in dev mode.")
-            self.log_info("Dev mode: Skipping upgrade due to missing email or license key.")
-            return
-        else:
-            QMessageBox.critical(self, "Error", "Missing email or license key.")
-            return
+    if not self.user_email:
+        QMessageBox.critical(self, "Error", "Missing email. Please set your email before upgrading.")
+        return
+
+    if not self.license_key:
+        self.log_info("No license key yet — assuming trial user upgrading for first time.")
 
     try:
         self.log_info(f"Creating Stripe checkout session for {self.user_email} upgrading to {new_tier}")
@@ -286,7 +278,7 @@ def on_upgrade(self):
         self.log_error(f"Upgrade error: {e}")
         QMessageBox.critical(self, "Error", f"Failed to upgrade subscription: {e}")
 
-def _poll_subscription_status(self, expected_tier, max_retries=24, delay=5):
+def _poll_subscription_status(self, expected_tier, max_retries=6, delay=4):
     """Poll Stripe for subscription status every few seconds until upgraded or timeout."""
     self.log_info(f"🔁 Polling subscription status for upgrade to {expected_tier}")
 
