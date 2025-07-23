@@ -100,7 +100,7 @@ def setup_ui(main_window, is_dev_mode=None):
     def focus_in_event_override(event):
         clipboard = QApplication.clipboard()
         raw_text = clipboard.text().strip()
-        sanitized = re.sub(r'[^A-Za-z0-9]', '', raw_text)[:40]
+        sanitized = re.sub(r'[^A-Za-z0-9_]', '', raw_text)[:40]
         main_window.username_entry.setText(sanitized)
         QLineEdit.focusInEvent(main_window.username_entry, event)
 
