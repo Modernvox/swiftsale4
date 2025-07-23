@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
 )
 from cloud_database_qt import CloudDatabaseManager
 
-from PySide6.QtGui import QPixmap, QFont, QCursor, QClipboard, QKeySequence, QShortcut
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QPixmap, QFont, QCursor, QClipboard, QKeySequence, QShortcut, QDesktopServices
+from PySide6.QtCore import Qt, QTimer, Signal, QUrl
 from config_qt import get_resource_path, load_config, get_config_value, DEFAULT_DATA_DIR, TIER_LIMITS, load_install_info, save_install_info
 from bidder_manager_qt import BidderManager
 from telegram_qt import TelegramService
@@ -336,53 +336,69 @@ class SwiftSaleGUI(QMainWindow):
         self.log_info(f"Settings tab toggled to {'visible' if not visible else 'hidden'}")
 
     def build_subscription_ui(self, parent_frame):
-        """Build Subscription tab UI."""
+        """Build Subscription tab UI (external billing only)."""
         layout = QVBoxLayout(parent_frame)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(12)
+
         subscription_group = QGroupBox("Subscription")
         subscription_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         subscription_layout = QGridLayout()
         subscription_layout.setContentsMargins(12, 12, 12, 12)
         subscription_layout.setSpacing(10)
         subscription_group.setLayout(subscription_layout)
+
         label = QLabel("Select Tier:")
         label.setObjectName("subscriptionLabel")
         subscription_layout.addWidget(label, 0, 0)
+
         self.tier_combo = QComboBox()
         self.tier_combo.setObjectName("tierComboBox")
-        tiers = ["Trial", "Bronze", "Silver", "Gold"]
-        self.tier_combo.addItems(tiers)
+        self.tier_combo.addItems(["Trial", "Bronze", "Silver", "Gold"])
         self.tier_combo.setCurrentText(self.tier)
+        self.tier_combo.setEnabled(False)  # No in-app tier changes
         subscription_layout.addWidget(self.tier_combo, 0, 1)
+
+        # Display status and next billing (if fetched successfully)
         try:
             r = requests.get(f"{self.base_url}/subscription-status", params={"email": self.user_email}, timeout=5)
-            if r.ok:
-                data = r.json()
-                status = data.get("status", "N/A")
-                next_billing = data.get("next_billing_date", "N/A")
-            else:
-                status, next_billing = "N/A", "N/A"
+            data = r.json() if r.ok else {}
+            status = data.get("status", "N/A")
+            next_billing = data.get("next_billing_date", "N/A")
         except Exception as e:
             self.log_error(f"Failed to fetch subscription status: {e}")
             status, next_billing = "N/A", "N/A"
-        subscription_layout.addWidget(QLabel(f"Status: {status}"), 1, 0)
-        subscription_layout.addWidget(QLabel(f"Next Billing: {next_billing}"), 1, 1)
-        upgrade_button = QPushButton("Upgrade")
-        upgrade_button.setObjectName("upgradeButton")
-        upgrade_button.clicked.connect(self.on_upgrade)
-        subscription_layout.addWidget(upgrade_button, 2, 0)
-        downgrade_button = QPushButton("Downgrade")
-        downgrade_button.setObjectName("downgradeButton")
-        downgrade_button.clicked.connect(self.on_downgrade)
-        subscription_layout.addWidget(downgrade_button, 2, 1)
-        cancel_button = QPushButton("Cancel")
-        cancel_button.setObjectName("cancelButton")
-        cancel_button.clicked.connect(self.on_cancel)
-        subscription_layout.addWidget(cancel_button, 3, 0, 1, 2)
+
+        self.status_label = QLabel(f"Status: {status}")
+        self.next_billing_label = QLabel(f"Next Billing: {next_billing}")
+        subscription_layout.addWidget(self.status_label, 1, 0)
+        subscription_layout.addWidget(self.next_billing_label, 1, 1)
+
+        # External-only actions
+        def open_portal():
+            QDesktopServices.openUrl(QUrl("https://swiftsaleapp.com"))
+
+        self.manage_subscription_button = QPushButton("Manage Subscription")
+        self.manage_subscription_button.setFixedWidth(220)
+        self.manage_subscription_button.setToolTip("Opens external site to manage your billing and plan.")
+        self.manage_subscription_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4A90E2;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #357ABD;
+            }
+        """)
+        self.manage_subscription_button.clicked.connect(open_portal)
+        subscription_layout.addWidget(self.manage_subscription_button, 2, 0, 1, 2)
+
         layout.addWidget(subscription_group)
         layout.addStretch(1)
-        self.log_info("Subscription tab initialized")
+        self.log_info("Subscription tab initialized (external billing mode)")
 
     def build_annotate_ui(self, parent_frame):
         """Build Annotate Labels tab UI."""

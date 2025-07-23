@@ -2,6 +2,7 @@ from cloud_database_qt import CloudDatabaseManager
 from PySide6.QtWidgets import QMessageBox, QApplication, QInputDialog, QProgressDialog
 from config_qt import save_install_info
 
+
 import sqlite3
 from gui_help_qt import (
     show_telegram_help,
@@ -384,14 +385,37 @@ def on_cancel(self):
             QMessageBox.critical(self, "Error", f"Unexpected error: {str(e)}")
 
 def update_subscription_ui(self):
-    """Update the Subscription tab and header/footer labels with current subscription info."""
-    if hasattr(self, "header_label"):
-        self.header_label.setText(f"SwiftSale - {self.user_email} ({self.tier})")
-    if hasattr(self, "footer_label") and hasattr(self, "status_label") and hasattr(self, "next_billing_label"):
-        status, next_billing = self.stripe_service.get_subscription_status(self.license_key)
-        self.status_label.setText(f"Status: {status}")
-        self.next_billing_label.setText(f"Next Billing: {next_billing}")
-        self.footer_label.setText(f"Status: {status} | Next Billing: {next_billing}")
+    """Update the Subscription tab and header/footer labels with current subscription info (no in-app billing)."""
+    try:
+        email_display = self.user_email or "Unknown Email"
+        tier_display = self.tier or "Unknown"
+        install_id = self.install_id or "N/A"
+
+        # Tier status
+        if self.tier.lower() == "trial":
+            status_text = "Trial Mode – Upgrade Required"
+        else:
+            status_text = f"✔ Verified – {self.tier} Tier"
+
+        billing_text = "Billing Managed Externally"
+
+        # Update header/footer
+        if hasattr(self, "header_label"):
+            self.header_label.setText(f"SwiftSale - {email_display} ({tier_display})")
+
+        if hasattr(self, "footer_label"):
+            self.footer_label.setText(f"Tier: {tier_display} | Install ID: {install_id} | {status_text}")
+
+        # Update subscription tab labels
+        if hasattr(self, "subscription_status_label"):
+            self.subscription_status_label.setText(f"Status: {status_text}")
+
+        if hasattr(self, "next_billing_label"):
+            self.next_billing_label.setText(f"Next Billing: {billing_text}")
+
+        self.log_info(f"Updated subscription UI: {tier_display}, {status_text}")
+    except Exception as e:
+        self.log_error(f"Failed to update subscription UI: {e}")
 
 def bind_event_methods(gui):
     """Bind event-related methods to the GUI instance."""
@@ -402,9 +426,9 @@ def bind_event_methods(gui):
     gui.copy_top_buyer_message = copy_top_buyer_message.__get__(gui, gui.__class__)
     gui.on_username_changed = on_username_changed.__get__(gui, gui.__class__)
     gui.open_dev_code_dialog = open_dev_code_dialog.__get__(gui, gui.__class__)
-    gui.on_upgrade = on_upgrade.__get__(gui, gui.__class__)
-    gui.on_downgrade = on_downgrade.__get__(gui, gui.__class__)
-    gui.on_cancel = on_cancel.__get__(gui, gui.__class__)
+    # gui.on_upgrade = on_upgrade.__get__(gui, gui.__class__)
+    # gui.on_downgrade = on_downgrade.__get__(gui, gui.__class__)
+    # gui.on_cancel = on_cancel.__get__(gui, gui.__class__)
     gui.update_subscription_ui = update_subscription_ui.__get__(gui, gui.__class__)
 
 def bind_help_methods(gui):
