@@ -154,26 +154,77 @@ def open_dev_code_dialog(self):
     code = code.strip().lower()
     install_id = self.install_id or "unknown-device"
 
+    # ✅ Local fallback codes always accepted (TEMP override here)
+    local_fallback_codes = {
+        "devoffline": {"tier": "Gold", "license_key": "DEV_MODE"},
+        "letmein": {"tier": "Gold", "license_key": "DEV_MODE"},
+        "brandi9933": {"tier": "Gold", "license_key": "DEV_MODE"},
+        "9933": {"tier": "Gold", "license_key": "DEV_MODE"},  # TEMPORARY override
+    }
 
-    # ✅ Try cloud if possible
-    try:
-        from cloud_database_qt import CloudDatabaseManager
-        cloud = CloudDatabaseManager(self.log_info, self.log_error)
-        result = cloud.validate_dev_code(code, self.user_email, install_id)
-
+    if code in local_fallback_codes:
         self.dev_access_granted = True
-        self.tier = result.get("tier", "Gold")
-        self.license_key = result.get("license_key", "DEV_MODE")
+        self.tier = local_fallback_codes[code]["tier"]
+        self.license_key = local_fallback_codes[code]["license_key"]
 
-        self.log_info(f"Dev access granted via cloud for install_id={install_id}")
+        self.log_info(f"Offline dev code used – {code} | install_id={install_id}")
         QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
         self.update_subscription_ui()
         self.update_header_and_footer()
         self.refresh_bin_usage_display()
+        return
 
+    try:
+        result = validate_remote_dev_code(code)
+        self.dev_access_granted = True
+        self.tier = result["tier"]
+        self.license_key = result["license_key"]
+        self.log_info(f"Dev code validated via DB – {code} | {result['email']} | install_id={install_id}")
+        QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
+        self.update_subscription_ui()
+        self.update_header_and_footer()
+        self.refresh_bin_usage_display()
     except Exception as e:
-        self.log_error(f"Dev code validation failed: {e}")
-        QMessageBox.warning(self, "Access Denied", "Invalid or unreachable developer code.")
+        self.log_error(f"Dev unlock failed: {e}")
+        QMessageBox.warning(self, "Access Denied", str(e))
+
+
+def get_dev_db_connection():
+    return psycopg2.connect(
+        dbname='swiftsaleapp4_db',
+        user='dev_reader',
+        password='OnlyCheckDevCodes123!',  # Replace with your actual safe password
+        host='dpg-d1qaevvfte5s73d4h9ng-a.ohio-postgres.render.com',
+        port='5432',
+        sslmode='require'
+    )
+
+def validate_remote_dev_code(code: str) -> dict:
+    with get_dev_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT email, expires_at, used, assigned_to, device_id, tier, license_key, frozen
+                FROM dev_codes
+                WHERE code = %s
+            """, (code,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Invalid or unrecognized developer code.")
+
+            email, expires_at, used, assigned_to, bound_device, tier, license_key, frozen = row
+
+            if used:
+                raise ValueError("Code already used.")
+            if frozen:
+                raise ValueError("Code is frozen.")
+            if expires_at and datetime.utcnow() > expires_at:
+                raise ValueError("Code expired.")
+
+            return {
+                "tier": tier or "Gold",
+                "license_key": license_key or "DEV_MODE",
+                "email": email or "dev@swiftsaleapp.com"
+            }
 
 def on_upgrade(self):
     """Handle clicking the Upgrade button in the Subscription tab with real-time refresh."""

@@ -125,7 +125,6 @@ def load_config():
         "TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN", ""),
         "TELEGRAM_CHAT_ID": os.getenv("TELEGRAM_CHAT_ID", ""),
         "API_TOKEN": os.getenv("API_TOKEN", ""),
-        "DEV_UNLOCK_CODE": os.getenv("DEV_UNLOCK_CODE", "letmein"),
         "SECRET_KEY": os.getenv("SECRET_KEY"),
         "USER_EMAIL": "",
         "INSTALL_ID": "",
@@ -182,6 +181,18 @@ def load_config():
             logger.info(f"Loaded config overrides from {CONFIG_PATH}")
         except Exception as e:
             logger.warning(f"Failed to load config.json overrides: {e}")
+
+    enc_dev_db_url = os.getenv("ENCRYPTED_DEV_DB_URL", "")
+    if fernet_key and enc_dev_db_url:
+        try:
+            fernet = Fernet(fernet_key.encode())
+            config["DEV_DB_URL"] = fernet.decrypt(enc_dev_db_url.encode()).decode()
+        except Exception as e:
+            logger.critical(f"Failed to decrypt DEV_DB_URL: {e}")
+            config["DEV_DB_URL"] = ""
+    else:
+        config["DEV_DB_URL"] = ""
+
 
     return config
 

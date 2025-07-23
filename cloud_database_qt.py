@@ -77,7 +77,7 @@ class CloudDatabaseManager:
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
-                # Create dev_codes table
+                # Create dev_codes table (now includes frozen + tier + license_key)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS dev_codes (
                         code VARCHAR(255) PRIMARY KEY,
@@ -86,6 +86,9 @@ class CloudDatabaseManager:
                         used BOOLEAN DEFAULT FALSE,
                         assigned_to VARCHAR(255),
                         device_id VARCHAR(255),
+                        frozen BOOLEAN DEFAULT FALSE,
+                        tier VARCHAR(50),
+                        license_key VARCHAR(255),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
