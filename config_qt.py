@@ -4,7 +4,6 @@ import json
 import logging
 import uuid
 from cryptography.fernet import Fernet
-from PySide6.QtWidgets import QInputDialog, QApplication
 
 
 INSTALL_INFO_PATH = os.path.join(
@@ -210,21 +209,6 @@ def save_config(config_dict):
 
 # ─── HELPER TO GET SINGLE CONFIG VALUE ────────────────
 _app_config_cache = None
-
-def get_or_prompt_user_email():
-    info = get_or_create_install_info()
-    email = info.get("email", "").strip().lower()
-
-    if not email or email == "trial@swiftsaleapp.com":
-        app = QApplication.instance() or QApplication(sys.argv)
-        email, ok = QInputDialog.getText(None, "Enter Your Email", "Enter your SwiftSale email:")
-        if ok and email:
-            info["email"] = email.strip().lower()
-            save_install_info(info["email"], info["install_id"], info["tier"])
-            return info["email"]
-        else:
-            return "trial@swiftsaleapp.com"
-    return email
 
 def get_config_value(key):
     """Always prioritize live environment variables for critical keys."""

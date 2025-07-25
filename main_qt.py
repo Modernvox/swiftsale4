@@ -203,6 +203,7 @@ def main():
     log_info("Starting SwiftSale GUI")
     install_info = get_or_create_install_info()
     user_email = install_info.get("email", "trial@swiftsaleapp.com")
+    device_id = install_info.get("install_id")
 
     # Prompt for real email if still using default trial email
     if user_email == "trial@swiftsaleapp.com":
@@ -216,16 +217,45 @@ def main():
 
             # Auto-update installs table with hashed_email -> tier mapping
             try:
+                # Enforce 2-device limit
                 if os.getenv("FLASK_ENV") == "production":
+                    import hashlib
+                    from PySide6.QtWidgets import QMessageBox
+                    from cloud_database_qt import CloudDatabaseManager
+
+                    hashed_email = hashlib.sha256(user_email.strip().lower().encode()).hexdigest()
                     cloud_db_tmp = CloudDatabaseManager(log_info=log_info, log_error=log_error)
-                    cloud_db_tmp.sync_with_local(bidder_manager, user_email)
+
+                    with cloud_db_tmp.pool.connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                SELECT 1 FROM install_devices
+                                WHERE hashed_email = %s AND device_id = %s
+                            """, (hashed_email, device_id))
+                            if cur.fetchone():
+                                log_info(f"Device {device_id} already registered for {user_email}")
+                            else:
+                                cur.execute("""
+                                    SELECT COUNT(*) FROM install_devices
+                                    WHERE hashed_email = %s
+                                """, (hashed_email,))
+                                count = cur.fetchone()[0]
+                                if count < 2:
+                                    cur.execute("""
+                                        INSERT INTO install_devices (raw_email, hashed_email, device_id)
+                                        VALUES (%s, %s, %s)
+                                    """, (user_email, hashed_email, device_id))
+                                    log_info(f"Registered device {device_id} for {user_email}")
+                                else:
+                                    QMessageBox.critical(None, "Access Denied", f"{user_email} is already signed in on 2 devices.")
+                                    sys.exit(1)
                     cloud_db_tmp.close()
-                    log_info(f"Synced installs tier for {user_email} after email prompt")
             except Exception as e:
-                log_error(f"Initial sync failed after setting email: {e}")
+                QMessageBox.critical(None, "Database Error", f"Device limit check failed:\n{e}")
+                sys.exit(1)
 
+            
     config = load_config()
-
     redacted = {k: ("<REDACTED>" if any(x in k for x in ["KEY", "TOKEN", "SECRET"]) else v) for k, v in config.items()}
     log_info(f"Loaded config: {redacted}")
 

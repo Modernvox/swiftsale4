@@ -162,7 +162,7 @@ def open_dev_code_dialog(self):
     # ✅ Local fallback codes always accepted (TEMP override here)
     local_fallback_codes = {
         "devoffline": {"tier": "Gold", "license_key": "DEV_MODE"},
-        "letmein": {"tier": "Gold", "license_key": "DEV_MODE"},
+        "Jclark": {"tier": "Gold", "license_key": "DEV_MODE"},
         "brandi9933": {"tier": "Gold", "license_key": "DEV_MODE"},
         "9933": {"tier": "Gold", "license_key": "DEV_MODE"},  # TEMPORARY override
     }

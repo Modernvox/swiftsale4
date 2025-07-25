@@ -214,31 +214,53 @@ class SwiftSaleGUI(QMainWindow):
         self.log_info(f"Initialized user {self.user_email}: tier={self.tier}, license={self.license_key}")
   
     def prompt_for_email(self):
-        """Show dialog to collect user email."""
+        """Prompt user for email and optionally skip in future if 'Don't ask again' is checked."""
+        from config_qt import get_or_create_install_info, save_install_info
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QCheckBox
+
+        info = get_or_create_install_info()
+        email = info.get("email", "").strip().lower()
+
+        # If already saved and not trial, return immediately
+        if email and email != "trial@swiftsaleapp.com":
+            return email
+
+        # Show dialog
         dialog = QDialog(self)
         dialog.setWindowTitle("Enter Email")
         layout = QVBoxLayout(dialog)
+
         label = QLabel("Please enter your email address:")
         email_input = QLineEdit()
+        dont_ask_checkbox = QCheckBox("Don't ask again (continue in Trial mode)")
         submit_button = QPushButton("Submit")
+
         layout.addWidget(label)
         layout.addWidget(email_input)
+        layout.addWidget(dont_ask_checkbox)
         layout.addWidget(submit_button)
         dialog.setLayout(layout)
 
         result = {}
 
         def on_submit():
-            email = email_input.text().strip()
-            if '@' in email:
-                result["email"] = email
+            entered = email_input.text().strip()
+            if '@' in entered:
+                result["email"] = entered.lower()
+                dialog.accept()
+            elif dont_ask_checkbox.isChecked():
+                result["email"] = "trial@swiftsaleapp.com"
                 dialog.accept()
             else:
                 label.setText("Invalid email address. Please try again:")
 
         submit_button.clicked.connect(on_submit)
         dialog.exec()
-        return result.get("email", "")
+
+        email = result.get("email", "trial@swiftsaleapp.com")
+        info["email"] = email
+        save_install_info(info["email"], info["install_id"], info["tier"])
+        return email
 
     def open_mailing_list_dialog(self):
         from gui_mailing_list import MailingListWindow
