@@ -1,4 +1,13 @@
-
+/*
+ * Fixed QSS stylesheet for SwiftSale.
+ *
+ * This stylesheet is based on the original ``style.qss`` but resolves
+ * an issue where message boxes (e.g. error/success prompts) would
+ * display white text on a white background on systems using a light
+ * theme.  The global ``QLabel, QGroupBox, QFrame`` selector has been
+ * narrowed to apply only to widgets within the main window, and
+ * explicit rules for ``QMessageBox`` have been added.
+ */
 
 
 QCheckBox {
@@ -72,9 +81,22 @@ QHeaderView::section {
     border: 1px solid #444;
 }
 
-QLabel, QGroupBox, QFrame {
+/*
+ * Apply dark text colors only within the main application window.
+ * Avoid styling generic QLabel/QGroupBox/QFrame globally because
+ * system dialogs (e.g. QMessageBox) often use light backgrounds
+ * and white text would become invisible.  Instead, target the
+ * main window explicitly.
+ */
+QMainWindow QLabel, QMainWindow QGroupBox, QMainWindow QFrame {
     background-color: transparent;
     color: #f0f0f0;
+}
+
+/* Ensure message boxes display dark text on a light background */
+QMessageBox, QMessageBox QLabel {
+    background-color: #ffffff;
+    color: #000000;
 }
 
 QLabel#footer {

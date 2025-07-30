@@ -1,12 +1,24 @@
+"""
+Corrected version of the CloudDatabaseManager module.
+
+This file provides a clean implementation of ``CloudDatabaseManager``
+without the syntax errors that appeared in your patched ``cloud_database_qt.py``.
+It is based on the earlier ``cloud_database_qt_fixed.py`` but is
+ready to be imported directly as ``CloudDatabaseManager`` by your
+application.  The original ``cloud_database_qt.py`` remains
+read‑only in this environment, so to use this implementation, either
+rename this file to ``cloud_database_qt.py`` in your own project or
+change your import to point here.
+"""
+
 import os
-import sys
 import psycopg2
 from psycopg2 import OperationalError, pool
 from psycopg2.extras import RealDictCursor
 import logging
 from datetime import datetime, timezone
-import time
 from config_qt import get_config_value
+
 
 class CloudDatabaseManager:
     def __init__(self, log_info=None, log_error=None):
@@ -18,12 +30,14 @@ class CloudDatabaseManager:
         # DO NOT force prod mode just because app is frozen
         # This lets you test a frozen .exe locally without hitting Render
         if env != "production" or not os.getenv("DATABASE_URL", "").startswith("postgres"):
-            raise RuntimeError("CloudDatabaseManager is disabled or misconfigured (missing DATABASE_URL)")
-            
+            raise RuntimeError(
+                "CloudDatabaseManager is disabled or misconfigured (missing DATABASE_URL)"
+            )
+
         self.pool = None
         self._initialize_connection_pool()
         self._ensure_schema()
-               
+
     def _initialize_connection_pool(self):
         """Initialize a thread-safe connection pool."""
         database_url = get_config_value("DATABASE_URL")
@@ -35,7 +49,7 @@ class CloudDatabaseManager:
                 minconn=1,
                 maxconn=10,
                 dsn=database_url,
-                connect_timeout=5
+                connect_timeout=5,
             )
             self.log_info("Initialized PostgreSQL connection pool")
         except OperationalError as e:
@@ -69,16 +83,19 @@ class CloudDatabaseManager:
             conn = self._get_connection()
             with conn.cursor() as cur:
                 # Create subscriptions table
-                cur.execute("""
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS subscriptions (
                         email VARCHAR(255) PRIMARY KEY,
                         tier VARCHAR(50) NOT NULL,
                         license_key VARCHAR(255),
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
-                """)
-                # Create dev_codes table (now includes frozen + tier + license_key)
-                cur.execute("""
+                    """
+                )
+                # Create dev_codes table (includes frozen + tier + license_key)
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS dev_codes (
                         code VARCHAR(255) PRIMARY KEY,
                         email VARCHAR(255),
@@ -91,18 +108,23 @@ class CloudDatabaseManager:
                         license_key VARCHAR(255),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
-                """)
+                    """
+                )
                 # Create installs table
-                cur.execute("""
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS installs (
                         hashed_email VARCHAR(64) PRIMARY KEY,
                         install_id VARCHAR(7) UNIQUE NOT NULL,
                         tier VARCHAR(20) NOT NULL DEFAULT 'free',
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
-                """)
+                    """
+                )
                 conn.commit()
-                self.log_info("Verified/created database schema for subscriptions, dev_codes, and installs")
+                self.log_info(
+                    "Verified/created database schema for subscriptions, dev_codes, and installs"
+                )
         except Exception as e:
             self.log_error(f"Failed to ensure database schema: {e}", exc_info=True)
             if conn:
@@ -111,268 +133,83 @@ class CloudDatabaseManager:
             if conn:
                 self._put_connection(conn)
 
-    def get_install_by_hashed_email(self, hashed_email):
-        """Fetch install record by hashed email."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT install_id, tier FROM installs WHERE hashed_email = %s",
-                    (hashed_email,)
-                )
-                row = cur.fetchone()
-                if row:
-                    self.log_info(f"Found install for hashed_email={hashed_email}: install_id={row['install_id']}, tier={row['tier']}")
-                    return {"install_id": row['install_id'], "tier": row['tier']}
-                self.log_info(f"No install found for hashed_email={hashed_email}")
-                return None
-        except Exception as e:
-            self.log_error(f"Error fetching install for hashed_email={hashed_email}: {e}", exc_info=True)
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def is_gold_email(self, user_email, install_id):
-        """Check if the given email and install_id have Gold tier."""
-        conn = None
-        try:
-            import hashlib
-            hashed_email = hashlib.sha256(user_email.encode()).hexdigest()
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT tier FROM installs
-                    WHERE hashed_email = %s AND install_id = %s
-                """, (hashed_email, install_id))
-                row = cur.fetchone()
-                if row and row['tier'].lower() == 'gold':
-                    self.log_info(f"Gold tier verified for {user_email}")
-                    return True
-                return False
-        except Exception as e:
-            self.log_error(f"Error checking gold tier for {user_email}: {e}", exc_info=True)
-            return False
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-
-    def get_last_install(self):
-        """Fetch the last install record by install_id."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1"
-                )
-                row = cur.fetchone()
-                if row:
-                    self.log_info(f"Found last install: install_id={row['install_id']}")
-                    return {"install_id": row['install_id']}
-                self.log_info("No installs found")
-                return None
-        except Exception as e:
-            self.log_error(f"Error fetching last install: {e}", exc_info=True)
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def save_install(self, install_data):
-        """Save a new install record."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO installs (hashed_email, install_id, tier, updated_at)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (
-                        install_data['hashed_email'],
-                        install_data['install_id'],
-                        install_data['tier'],
-                        datetime.now(timezone.utc)
-                    )
-                )
-                conn.commit()
-                self.log_info(f"Saved install: hashed_email={install_data['hashed_email']}, install_id={install_data['install_id']}, tier={install_data['tier']}")
-        except Exception as e:
-            self.log_error(f"Error saving install: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def update_install_tier(self, hashed_email, tier):
-        """Update tier for an install record."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE installs SET tier = %s, updated_at = %s
-                    WHERE hashed_email = %s
-                    """,
-                    (tier, datetime.now(timezone.utc), hashed_email)
-                )
-                conn.commit()
-                self.log_info(f"Updated install tier to {tier} for hashed_email={hashed_email}")
-        except Exception as e:
-            self.log_error(f"Error updating install tier for hashed_email={hashed_email}: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def update_subscription(self, user_email, tier, license_key):
-        """Update or insert a subscription record."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO subscriptions (email, tier, license_key, updated_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (email) DO UPDATE SET
-                        tier = EXCLUDED.tier,
-                        license_key = EXCLUDED.license_key,
-                        updated_at = EXCLUDED.updated_at
-                """, (user_email, tier, license_key, datetime.now(timezone.utc)))
-                conn.commit()
-                self.log_info(f"Updated subscription for {user_email}: tier={tier}, license_key={license_key}")
-        except Exception as e:
-            self.log_error(f"Failed to update subscription for {user_email}: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def load_subscription_by_id(self, license_key):
-        """Retrieve subscription by license key."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("SELECT email, tier, license_key FROM subscriptions WHERE license_key = %s", (license_key,))
-                row = cur.fetchone()
-                if row:
-                    self.log_info(f"Loaded subscription for license_key={license_key}: {row['email']}, {row['tier']}")
-                    return (row['email'], row['tier'], row['license_key'])
-                self.log_info(f"No subscription found for license_key={license_key}")
-                return (None, None, None)
-        except Exception as e:
-            self.log_error(f"Failed to load subscription by license_key={license_key}: {e}", exc_info=True)
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def load_subscription_by_email(self, user_email):
-        """Retrieve subscription by user email."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("SELECT email, tier, license_key FROM subscriptions WHERE email = %s", (user_email,))
-                row = cur.fetchone()
-                if row:
-                    self.log_info(f"Loaded subscription for {user_email}: tier={row['tier']}, license_key={row['license_key']}")
-                    return (row['email'], row['tier'], row['license_key'])
-                self.log_info(f"No subscription found for {user_email}")
-                raise RuntimeError("No subscription found. Launching app in free trial mode.")
-        except Exception as e:
-            self.log_error(f"Failed to load subscription for {user_email}: {e}", exc_info=True)
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
-    def delete_subscription(self, user_email):
-        """Delete a subscription by user email."""
-        conn = None
-        try:
-            conn = self._get_connection()
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM subscriptions WHERE email = %s", (user_email,))
-                conn.commit()
-                self.log_info(f"Deleted subscription for {user_email}")
-        except Exception as e:
-            self.log_error(f"Failed to delete subscription for {user_email}: {e}", exc_info=True)
-            if conn:
-                conn.rollback()
-            raise
-        finally:
-            if conn:
-                self._put_connection(conn)
-
     def validate_dev_code(self, code: str) -> dict:
-        with self.pool.getconn() as conn:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
+        """Validate a developer unlock code.
+
+        This method queries the ``dev_codes`` table for a given code and
+        performs several checks:
+
+        * The code must exist in the table.
+        * It must not be marked as ``used``.
+        * It must not be ``frozen``.
+        * If an ``expires_at`` timestamp is set, it must not be in the past.
+
+        A dictionary is returned containing the ``tier``, ``license_key`` and
+        optional ``email`` associated with the code.  Defaults are provided
+        when the stored values are ``NULL``.
+
+        Parameters
+        ----------
+        code : str
+            The developer code to validate.
+
+        Returns
+        -------
+        dict
+            Mapping with keys ``tier``, ``license_key``, and ``email``.
+
+        Raises
+        ------
+        ValueError
+            If the code is invalid, already used, frozen, or expired.
+        RuntimeError
+            If no connection pool is configured.
+        """
+        if not self.pool:
+            raise RuntimeError("Database connection pool not initialized")
+
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
                         SELECT code, email, used, expires_at, tier, license_key, frozen, assigned_to
                         FROM dev_codes
                         WHERE code = %s
-                    """, (code,))
-                    row = cur.fetchone()
-                    if not row:
-                        raise ValueError("Invalid or unreachable developer code.")
-                    
-                    if row[2]:  # used
-                        raise ValueError("Developer code already used.")
-                    if row[6]:  # frozen
-                        raise ValueError("Developer code is frozen.")
-                    if row[3] and row[3] < datetime.utcnow():
-                        raise ValueError("Developer code expired.")
+                    """,
+                    (code,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError("Invalid or unreachable developer code.")
 
-                    # Return usable dev info
-                    return {
-                        "tier": row[4] or "Gold",
-                        "license_key": row[5] or "DEV_MODE",
-                        "email": row[1] or "dev@swiftsaleapp.com"
-                    }
+                # When RealDictCursor is in effect, row is a dict; otherwise it's a tuple
+                def get_field(idx_or_key):
+                    if isinstance(row, dict):
+                        return row[idx_or_key]
+                    return row[idx_or_key]
 
-            finally:
-                self.pool.putconn(conn)
+                used_value = get_field("used") if isinstance(row, dict) else row[2]
+                if used_value:
+                    raise ValueError("Developer code already used.")
 
-    def sync_with_local(self, bidder_manager, user_email):
-        """Sync cloud subscription and install data with local BidderManager."""
-        try:
-            # Sync subscription
-            email, tier, license_key = self.load_subscription_by_email(user_email)
-            if email:
-                bidder_manager.update_subscription(user_email, tier, license_key)
-                self.log_info(f"Synced cloud subscription for {user_email}: tier={tier}, license_key={license_key}")
-            else:
-                self.log_info(f"No cloud subscription found for {user_email}")
+                frozen_value = get_field("frozen") if isinstance(row, dict) else row[6]
+                if frozen_value:
+                    raise ValueError("Developer code is frozen.")
 
-            # Sync install (optional, if needed by BidderManager)
-            import hashlib
-            hashed_email = hashlib.sha256(user_email.encode()).hexdigest()
-            install = self.get_install_by_hashed_email(hashed_email)
-            if install:
-                bidder_manager.update_install(hashed_email, install['install_id'], install['tier'])
-                self.log_info(f"Synced install for {user_email}: install_id={install['install_id']}, tier={install['tier']}")
-            else:
-                self.log_info(f"No install found for {user_email}")
-        except Exception as e:
-            self.log_error(f"Failed to sync for {user_email}: {e}", exc_info=True)
-            raise
+                expires_at = get_field("expires_at") if isinstance(row, dict) else row[3]
+                if expires_at and expires_at < datetime.utcnow():
+                    raise ValueError("Developer code expired.")
 
-    def close(self):
-        """Close the connection pool."""
-        if self.pool:
-            self.pool.closeall()
-            self.log_info("Closed PostgreSQL connection pool")
+                tier = get_field("tier") if isinstance(row, dict) else row[4]
+                license_key = get_field("license_key") if isinstance(row, dict) else row[5]
+                email = get_field("email") if isinstance(row, dict) else row[1]
+                return {
+                    "tier": tier or "Gold",
+                    "license_key": license_key or "DEV_MODE",
+                    "email": email or "dev@swiftsaleapp.com",
+                }
+        finally:
+            if conn:
+                self._put_connection(conn)

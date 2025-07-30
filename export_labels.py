@@ -1,6 +1,7 @@
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib import colors
+from datetime import datetime
 import os
 
 def generate_labels_pdf(entries, output_path):
@@ -58,8 +59,10 @@ def generate_labels_pdf(entries, output_path):
         c.drawString(left, top - 1.4 * inch - 2 * line_height, "123 LIQUIDATION LANE")
         c.drawString(left, top - 1.4 * inch - 3 * line_height, "SPRINGFIELD IL 62704-1234")
 
-        # Right side info
-        c.drawRightString(right, top - 1.4 * inch, "Ship Date: 07/20/25")
+        # Right side info.  Use today's date for the ship date and a
+        # representative weight.  Adjust formatting as necessary.
+        ship_date = datetime.now().strftime("%m/%d/%y")
+        c.drawRightString(right, top - 1.4 * inch, f"Ship Date: {ship_date}")
         c.drawRightString(right, top - 1.4 * inch - line_height, "Weight: 11 oz")
 
         # QR placeholder

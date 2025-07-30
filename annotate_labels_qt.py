@@ -34,41 +34,47 @@ def extract_username_and_pickup_firstname(page_text: str):
             trimmed.startswith("pickup address:")
         ):
             found_shipment_block = True
-            for offset in range(idx + 1, len(lines) - 1):
-                line1 = lines[offset].strip()
-                line2 = lines[offset + 1].strip()
 
-                # Case 1: Username on the next line in parentheses
-                if re.match(r"\([^)]+\)", line2):
-                    username = line2.strip("()").lower()
+            # Search next few lines for username
+            for offset in range(1, 6):
+                i = idx + offset
+                if i >= len(lines):
+                    break
+
+                current = lines[i].strip()
+
+                # Match separate username line: (username), including underscore, numbers, dots
+                m1 = re.fullmatch(r"\(([\w\d._-]+)\)", current)
+                if m1:
+                    username = m1.group(1).strip().lower()
                     if username != "new buyer!":
-                        first_name = line1.split()[0] if line1 else None
+                        # Try to get name from previous line
+                        prev_line = lines[i - 1].strip() if i > 0 else ""
+                        first_name = prev_line.split()[0] if prev_line else None
                         return username, first_name
 
-                # Case 2: Name and username on the same line
-                m = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([^)]+)\)", line1)
-                if m:
-                    first_name = m.group(1).strip() if m.group(1) else None
-                    username = m.group(2).strip().lower()
+                # Match inline username: e.g., Jane Doe (user_123)
+                m2 = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([\w\d._-]+)\)", current)
+                if m2:
+                    first_name = m2.group(1).strip() if m2.group(1) else None
+                    username = m2.group(2).strip().lower()
                     if username != "new buyer!":
                         return username, first_name
-            break
+
+            break  # stop after one block
 
     return None, None
-
 
 def remember_folder_path(folder):
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
     with open(SETTINGS_FILE, "w") as f:
         json.dump({"last_pdf_folder": folder}, f)
 
-
 def get_last_folder():
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, "r") as f:
             return json.load(f).get("last_pdf_folder")
     return os.path.expanduser("~")
-
 
 def annotate_labels_qt(parent, db_path):
     folder_hint = get_last_folder()
@@ -111,7 +117,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
     font_size_app: int = 14,
     font_size_bin: int = 15,
     font_size_first: int = 19,
-    font_size_default: int = 10
+    font_size_default: int = 12
 ) -> list:
     conn = sqlite3.connect(bidders_db_path)
     cursor = conn.cursor()
@@ -166,6 +172,9 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     continue
 
                 address_data = parse_packing_slip_address(page_text)
+                if "city" in address_data and address_data["city"].lower().startswith("area:"):
+                    address_data["city"] = address_data["city"].split(":", 1)[-1].strip()
+
                 if not address_data:
                     skipped_pages.append((page_index, "no_address_data"))
                     print(f"[DEBUG] Skipped: address parse failed for {username}")

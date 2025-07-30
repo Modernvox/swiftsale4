@@ -232,7 +232,7 @@ def show_top_buyer_help(gui):
         "1. Click the label to copy the message.\n"
         "2. The message uses the template in 'Settings' > 'Top Buyer Text'.\n\n"
         "**Notes**:\n"
-        "- Top buyers are determined by the number of bins assigned.\n"
+        "- Top buyers are determined by the number of items assigned.\n"
         "- Ensure a message template is set in Settings."
     )
     help_content = QTextBrowser()

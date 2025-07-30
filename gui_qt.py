@@ -3,7 +3,9 @@ import socketio
 import hashlib
 import logging
 import requests
-from datetime import timedelta
+from datetime import timedelta, datetime
+
+
 from cloud_database_qt import CloudDatabaseManager
 from PySide6.QtWidgets import (
     QMainWindow, QFrame, QLabel, QPushButton, QLineEdit, QCheckBox, QComboBox,
@@ -93,6 +95,13 @@ class SwiftSaleGUI(QMainWindow):
         self.tier = install_config.get('tier', 'Trial')
         self.license_key = ""
 
+        promo_exp = install_config.get("promo_expiration")
+        if promo_exp and promo_exp < datetime.utcnow():
+            self.log_info(f"Promo expired for {self.user_email}; downgrading tier")
+            self.tier = "Trial"
+            install_config["promo_expiration"] = None
+            save_install_info(self.user_email, self.install_id, self.tier)
+
         # If no email, prompt the user now
         if not self.user_email:
             self.user_email = self.prompt_for_email()
@@ -111,11 +120,30 @@ class SwiftSaleGUI(QMainWindow):
                     hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
                     cloud_install = self.cloud_db.get_install_by_hashed_email(hashed_email)
                     if cloud_install:
-                        self.install_id = cloud_install['install_id']
-                        self.tier = cloud_install['tier']
-                        self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-                        save_install_info(self.user_email, self.install_id, self.tier)
-                        self.log_info(f"✅ Synced install from cloud: {self.user_email}, ID: {self.install_id}, Tier: {self.tier}")
+                        remote_exp = cloud_install.get("promo_expiration")
+                        if remote_exp and remote_exp < datetime.utcnow():
+                            # Remote promo expired; downgrade and clear
+                            self.tier = "Trial"
+                            self.cloud_db.update_install_tier(
+                                hashed_email, self.tier, install_id=self.install_id
+                            )
+                            save_install_info(self.user_email, self.install_id, self.tier)
+                            self.log_info(f"Remote promo expired; downgraded {self.user_email}")
+                        else:
+                            # Sync install ID, tier, and promo expiration locally
+                            self.install_id = cloud_install.get("install_id", self.install_id)
+                            self.tier = cloud_install.get("tier", self.tier)
+                            save_install_info(
+                                self.user_email,
+                                self.install_id,
+                                self.tier,
+                                promo_expiration=remote_exp,
+                            )
+                            self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+                            self.log_info(
+                                f"✅ Synced install from cloud: {self.user_email}, "
+                                f"ID: {self.install_id}, Tier: {self.tier}, promo_exp={remote_exp}"
+                            )
                     else:
                         self.log_info(f"No cloud record found for {self.user_email}, using local data")
 
@@ -263,10 +291,10 @@ class SwiftSaleGUI(QMainWindow):
         return email
 
     def open_mailing_list_dialog(self):
-        from gui_mailing_list import MailingListWindow
+        from mailing_list_manager import MailingListViewer
 
-        dialog = MailingListWindow(self)
-        dialog.exec()
+        self.mailing_viewer = MailingListViewer()
+        self.mailing_viewer.show()
  
     def register_install(self):
         """Register install with backend and save response."""
