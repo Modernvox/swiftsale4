@@ -15,6 +15,9 @@ from utils_qt import show_toast
 from mailing_list_manager import MailingListManager
 from datetime import datetime
 from parse_utils import parse_packing_slip_address, extract_spent_amount
+from collections import defaultdict
+label_counts = defaultdict(int)  # Tracks how many times each username appears
+
 
 LABEL_WIDTH = 4 * inch
 LABEL_HEIGHT = 6 * inch
@@ -24,8 +27,8 @@ SETTINGS_FILE = os.path.join(os.getenv("LOCALAPPDATA"), "SwiftSale", "pdf_paths.
 
 def extract_username_and_pickup_firstname(page_text: str):
     lines = page_text.splitlines()
-    found_shipment_block = False
 
+    # Step 1: Try lines near 'ships to' or 'pickup to'
     for idx, line in enumerate(lines):
         trimmed = line.strip().lower()
         if (
@@ -33,27 +36,22 @@ def extract_username_and_pickup_firstname(page_text: str):
             trimmed.startswith("pickup to:") or
             trimmed.startswith("pickup address:")
         ):
-            found_shipment_block = True
-
-            # Search next few lines for username
             for offset in range(1, 6):
                 i = idx + offset
                 if i >= len(lines):
                     break
-
                 current = lines[i].strip()
 
-                # Match separate username line: (username), including underscore, numbers, dots
+                # Match (username)
                 m1 = re.fullmatch(r"\(([\w\d._-]+)\)", current)
                 if m1:
                     username = m1.group(1).strip().lower()
                     if username != "new buyer!":
-                        # Try to get name from previous line
                         prev_line = lines[i - 1].strip() if i > 0 else ""
                         first_name = prev_line.split()[0] if prev_line else None
                         return username, first_name
 
-                # Match inline username: e.g., Jane Doe (user_123)
+                # Match Name (username)
                 m2 = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([\w\d._-]+)\)", current)
                 if m2:
                     first_name = m2.group(1).strip() if m2.group(1) else None
@@ -61,9 +59,29 @@ def extract_username_and_pickup_firstname(page_text: str):
                     if username != "new buyer!":
                         return username, first_name
 
-            break  # stop after one block
+            break  # stop after first match block
+
+    # Step 2: Fallback — scan entire page for any (username) pattern
+    for idx, line in enumerate(lines):
+        current = line.strip()
+
+        m1 = re.fullmatch(r"\(([\w\d._-]+)\)", current)
+        if m1:
+            username = m1.group(1).strip().lower()
+            if username != "new buyer!":
+                prev_line = lines[idx - 1].strip() if idx > 0 else ""
+                first_name = prev_line.split()[0] if prev_line else None
+                return username, first_name
+
+        m2 = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([\w\d._-]+)\)", current)
+        if m2:
+            first_name = m2.group(1).strip() if m2.group(1) else None
+            username = m2.group(2).strip().lower()
+            if username != "new buyer!":
+                return username, first_name
 
     return None, None
+
 
 def remember_folder_path(folder):
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
@@ -119,6 +137,9 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
     font_size_first: int = 19,
     font_size_default: int = 12
 ) -> list:
+    from collections import defaultdict
+    label_counts = defaultdict(int)
+
     conn = sqlite3.connect(bidders_db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT username, bin_number FROM bin_assignments;")
@@ -130,7 +151,6 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
     pdf_reader = PdfReader(whatnot_pdf_path)
     pdf_writer = PdfWriter()
     skipped_pages = []
-
     saved_usernames = set()
 
     with pdfplumber.open(whatnot_pdf_path) as plumber_pdf:
@@ -162,8 +182,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     if current_buyer not in saved_usernames:
                         mailing_list.add_or_update_entry(mailing_entry)
                         saved_usernames.add(current_buyer)
-                    current_spent_total = 0.0  # 🔧 Reset to avoid duplicate subtotal accumulation
-
+                    current_spent_total = 0.0
 
                 username, full_name = extract_username_and_pickup_firstname(page_text)
                 if not username:
@@ -172,16 +191,18 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     continue
 
                 address_data = parse_packing_slip_address(page_text)
-                if "city" in address_data and address_data["city"].lower().startswith("area:"):
-                    address_data["city"] = address_data["city"].split(":", 1)[-1].strip()
-
-                if not address_data:
+                if address_data:
+                    city_val = address_data.get("city")
+                    if city_val and isinstance(city_val, str) and city_val.lower().startswith("area:"):
+                        address_data["city"] = city_val.split(":", 1)[-1].strip()
+                else:
                     skipped_pages.append((page_index, "no_address_data"))
                     print(f"[DEBUG] Skipped: address parse failed for {username}")
                     pdf_writer.add_page(original_page)
                     continue
 
                 current_buyer = username.lower()
+                label_counts[current_buyer] += 1
                 current_first_name = full_name
 
                 pickup_note = "PICK UP" if is_pickup else address_data.get("address_line_2", "")
@@ -213,13 +234,12 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     can.drawString(stamp_x, stamp_y + font_size_first + 4, label_text)
 
                     label_width = can.stringWidth(label_text, font_name, font_size_app)
-                    can.setFont(font_name, font_size_bin + 16)  # e.g., 19
+                    can.setFont(font_name, font_size_bin + 16)
                     can.drawString(stamp_x + label_width + 30, stamp_y + font_size_first - 4, f"#{bin_number}")
 
                     if is_pickup and current_first_name:
                         can.setFont(font_name, font_size_first)
                         can.drawString(0.40 * inch, 4.72 * inch, f"****{current_first_name}****")
-
                 else:
                     skipped_pages.append((page_index, current_buyer or "unknown"))
                     can.setFont(font_name, font_size_app)
@@ -246,6 +266,30 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
             }
             print(f"[DEBUG] Final mailing entry (EOF): {mailing_entry}")
             mailing_list.add_or_update_entry(mailing_entry)
+
+    # Summary page for duplicate bins
+    duplicates = {u: c for u, c in label_counts.items() if c > 1}
+    if duplicates:
+        packet = io.BytesIO()
+        c = canvas.Canvas(packet, pagesize=PAGE_SIZE)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(0.5 * inch, 5.5 * inch, "⚠️ Multiple Labels Detected")
+
+        y = 5.2 * inch
+        for username, count in sorted(duplicates.items()):
+            bin_number = bin_map.get(username, "N/A")
+            c.setFont("Helvetica", 13)
+            c.drawString(0.5 * inch, y, f"{username} — Bin #{bin_number} (x{count})")
+            y -= 0.3 * inch
+            if y < 1.0 * inch:
+                c.showPage()
+                y = 5.5 * inch
+
+        c.save()
+        packet.seek(0)
+        summary_pdf = PdfReader(packet)
+        for page in summary_pdf.pages:
+            pdf_writer.add_page(page)
 
     with open(output_pdf_path, "wb") as out_f:
         pdf_writer.write(out_f)
