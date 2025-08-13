@@ -1,0 +1,315 @@
+✅ How to Use the SwiftSale App
+Download the Installer
+Visit swiftsaleapp.com and download the official SwiftSaleApp installer.
+
+Run the Installer
+Open the downloaded file to begin installation. Follow the on-screen prompts.
+
+Accept the User Agreement
+When prompted, check the box to confirm you’ve read and accepted the user agreement.
+
+(Optional) Add Desktop Shortcut
+It’s recommended to check the box to add a shortcut to your desktop for quick access.
+
+Choose Launch Option
+By default, SwiftSaleApp will launch automatically after installation. You can uncheck this option if you prefer to open the app later.
+
+Enter Your Email
+On first launch, you’ll be prompted to enter your email address. This is required to activate your account and sync with your subscription tier.
+
+Start in Trial Mode
+SwiftSaleApp starts in Free Trial mode, which allows up to 20 bin assignments. You can upgrade your tier anytime by visiting swiftsaleapp.com and choosing Bronze, Silver, or Gold.
+
+Unlock Your Tier
+After purchasing a subscription, you’ll receive a unique unlock code via email. Enter this code once to activate your subscription. From then on, your subscription status will automatically be recognized each time you launch the app.
+How to use the SwiftSale App:
+SwiftSale App was developed by a seller for sellers. It was developed with a simple, yet powerful interface. 
+
+💳 Subscription Management
+All payments are securely processed via Stripe.
+
+Subscriptions remain active until canceled or a payment fails.
+
+If a payment fails, you’ll have a 7-day grace period before your unlock code is revoked and your account reverts to trial mode.
+
+You may cancel anytime through your Stripe receipt or account.
+
+Cancellations stop future charges, but no refunds are provided for unused time. Your plan remains active until the end of the current billing cycle.
+
+🔐 SwiftSaleApp Security
+SwiftSaleApp is designed with your privacy and control in mind:
+
+Local-Only Data Storage
+All information entered into the app is stored locally on your PC or laptop. Nothing is uploaded to the cloud or accessed remotely.
+
+No Ongoing Internet Connection
+The app does not maintain an active internet connection while in use. It operates fully offline during your shows and order processing.
+
+Secure Subscription Validation
+An internet connection is only used briefly to unlock or validate your subscription via Stripe when entering an unlock code.
+
+We Never Access Your Data
+SwiftSaleApp never transmits, stores, or shares your local data. Only the seller has access to the information inside the app.
+
+⚙️ App Setup
+To get started with SwiftSaleApp:
+
+Open Your Web Browser
+Navigate to your live Whatnot show. If your browser is already open, simply go to your live show page.
+
+Arrange Your Screen
+Resize your browser window to take up half of your screen.
+
+Launch SwiftSaleApp
+Open the SwiftSaleApp and position it in the remaining half of your screen — side by side with your browser.
+
+Avoid Overlapping Windows
+Make sure the browser and SwiftSaleApp do not overlap. Keeping both fully visible ensures the app and live show remain visible while alternating between both. 
+
+You can adjust window sizes as needed for comfort and visibility, but always maintain a clean side-by-side setup for best performance.
+
+⚡ Setting Up Your Workflow for Efficiency and Speed
+SwiftSaleApp is the most powerful and efficient companion tool for Whatnot sellers—built specifically to streamline the post-show process: packing, printing, and shipping orders faster than ever.
+
+Whether you're a seasoned seller or handling mid-to-high volume shows, SwiftSaleApp leads the way in speed and efficiency, giving you a serious edge in order fulfillment.
+
+With such a wide variety of products being sold on Whatnot, it’s critical that you, as a seller, establish a streamlined workflow from the start. Once dialed in, every show runs like a well-oiled machine—from the first sale to the final shipment.
+-ASSIGNING BINS IN REAL TIME- This allows sellers to start building orders during the show and not after. Because every user is assigned a bin in real time and Swiftsale displays them to sellers in real time, sellers are able to keep each buyers items together whether in a box, bin or location the buyers items are kept in their own storage space. 
+
+🏷️ Annotate Labels — A Game-Changer for Sellers
+SwiftSaleApp’s Annotate Labels feature is one of the most powerful post-show tools available for Whatnot sellers.
+
+After your show, simply download your Whatnot shipping labels and run them through the Annotate Labels tool in SwiftSale. In just seconds, the app scans the entire batch, automatically matches each label with the buyer’s assigned bin, and generates an updated set of labels with smart, time-saving enhancements: This dramatically reduces the time needed for packing, sorting, and local pickup organization—especially for mid to high-volume sellers.
+
+
+✅ Annotated Labels Include:
+Buyer’s Assigned Bin Number (clearly marked)
+
+Full Name on local pickup slips (for fast sorting and handoffs)
+
+Giveaway or Flash Sale indicators, if applicable
+
+💡 Bonus: Mailing List Builder (Built-In)
+While parsing and annotating your labels, SwiftSale also automatically builds a mailing list using buyer names and shipping addresses. This list grows with every annotated batch and can be used for:
+
+Marketing campaigns
+
+Thank-you gifts or holiday mailers
+
+Re-engaging loyal buyers
+
+You don’t have to lift a finger. Just annotate your labels, and SwiftSale handles the rest.
+
+Push Bin Assignments Remotely
+SwiftSaleApp includes a built-in Telegram integration that allows sellers to receive real-time bin assignment notifications from anywhere in the world with internet access. This means your team can operate the app remotely—whether from home or another location—and instantly push assigned bin numbers directly to your phone, desktop, or tablet. All that’s needed is a simple Telegram bot setup, and you're ready to manage your show with full remote coordination.
+
+✅ How to Set Up a Telegram Bot for SwiftSaleApp
+Step 1: Create Your Bot
+
+Open the Telegram app on your phone or computer.
+
+In the search bar, type @BotFather and open the chat.
+
+Send the message: ​/newbot
+
+Follow the prompts to:
+
+Give your bot a name (e.g., SwiftSale Remote Bot)
+
+Choose a unique username that ends in bot (e.g., swiftsale_remote_bot)
+
+Once completed, BotFather will send you a bot token — a long string of letters and numbers.
+📝 Copy and save this token — you’ll need it in SwiftSaleApp.
+
+Step 2: Get Your Chat ID
+
+Open a new chat with the bot you just created.
+
+Send a simple message like Hello.
+
+Now, open SwiftSaleApp and go to the Telegram setup screen.
+
+Paste your bot token into the app.
+
+The app will automatically detect your chat and retrieve your Chat ID for you.
+
+You’ll see a success message when the connection is working.
+
+Optional – Team Mode (Group Setup)
+If you want multiple people to receive bin assignments:
+
+Create a Telegram group with your team.
+
+Add your bot to the group.
+
+Send any message in the group.
+
+SwiftSaleApp will automatically recognize the group and use it for notifications.
+
+🕹️ Know Your Tools: SwiftSaleApp Button Guide
+Before starting your live show, take a moment to familiarize yourself with what each button in SwiftSaleApp does.
+Understanding these tools in advance ensures a smooth, error-free experience during fast-paced live sales — saving you time and reducing stress post-show.
+👤 Add Bidder Frame
+This is where you'll log each winning buyer during your live show.
+
+With DoubleClickCopy already running (see setup instructions), follow this process for each item sold:
+
+Double-click the winner’s username from your Whatnot live show (this copies it).
+
+In SwiftSaleApp, click once in the username field — the name will auto-paste.
+
+Click Add Bidder to log the sale.
+
+SwiftSaleApp will:
+
+Record the buyer’s username
+
+Automatically assign the next available bin number, starting at Bin 1
+
+(Gold tier supports up to 600 unique bins)
+
+Ensure that each buyer gets only one bin number per show
+
+📌 Example:
+If "Whatnowski" wins the first auction:
+
+They are assigned Bin 1
+
+Even if they win again later, they’ll remain Bin 1 for the entire show
+
+The Latest Bidder Display will show:
+Latest: whatnowski 1
+
+This system ensures clean, consistent bin tracking — no duplicate bin assignments, no confusion.
+
+To clear current pasted text just hit the clear button
+
+📊 Analytics Frame – Button Descriptions & Purpose
+🔝 Top Buyers Display
+-Shows a live-updating list of your highest spenders during the show.
+
+As buyers win more auctions, this list ranks them in real-time based on total spent.
+📋 Click to Copy Top Buyer(s)
+-Instantly copies the current top buyer(s) to your clipboard.
+-Useful for posting shoutouts in chat or tracking VIPs.
+
+💬 Telegram Integration [?]
+-Sends top buyer info and live updates to your Telegram (if set up).
+
+⏱️ Sell Rate / Timer Controls
+These buttons track and display your average items sold per minute and total show time:
+
+Sell Rate – Activates the real-time items per minute tracker.
+Start – Begins the show timer.
+Pause – Pauses the timer (useful for breaks or intermissions).
+Stop – Ends the timer and finalizes sell rate calculations.
+
+🎁 Giveaway / Flash Sale Buttons
+Giveaway – Copies your pre-written giveaway message to clipboard.
+Flash Sale – Copies your flash sale announcement message.
+Both messages can be customized in Settings.
+Use these to quickly engage your audience during the show.
+
+
+👥 Bidders Frame – Button & Feature Guide
+🔢 Bins Used: 20/600
+Displays the current number of unique bins assigned out of the maximum available for your tier (e.g., 600 for Gold).
+
+Each buyer is only assigned one bin per show.
+
+🆕 Latest: claimkingkole 20
+Shows the most recently added bidder and the bin number assigned.
+
+Updates instantly with each new entry for quick visual confirmation during your live show.
+
+📋 Bidder Table (Main Section)
+This is your real-time buyer log. It tracks:
+
+Column
+Username:	The Whatnot buyer's username
+Qty:	Total items won by that user so far
+Bin:	Their assigned bin number
+Giveaway:	(Optional) Tracks giveaway winners
+Weight:	(Optional) Used for shipping weight
+Time:	Timestamp or time of claim
+
+The table updates live as you enter each bidder using the Add Bidder frame.
+
+📂 Import / Export
+Import: Load a previously saved show (CSV format).
+
+Export: Save your current session to a CSV file for records, packing lists, or label prep.
+
+🔃 Sort Bin ↑ / ↓
+Sorts the bidder table by bin number in ascending or descending order.
+
+Helpful when organizing physical bins during packing or pickups.
+
+🧼 Clear
+Wipes all current bidder data from the table.
+
+Use with caution — this action is irreversible during a session.
+
+
+⚙️ SwiftSaleApp Settings Panel – Field Guide
+🔵 Open Mailing List
+Opens the Mailing List Manager, where you can view, search, and export all buyer names and addresses collected during annotated label runs.
+
+🧾 Settings Fields
+📨 Telegram Chat ID
+Enter your Telegram Chat ID here to enable push notifications.
+
+When set up correctly, SwiftSale will send live updates (like top buyers or bin assignments) directly to this chat.
+
+Only required if you're using Telegram integration.
+
+🏆 Top Buyer Text
+Template for automated top buyer shoutouts.
+
+Use placeholders:
+
+{username} → winner's Whatnot name
+
+{qty} → number of items they've won
+
+Example Output:
+WTG ClaimKingKole! You nabbed 9 auctions so far!
+
+🎁 Giveaway Text
+Message copied to clipboard when you click the Giveaway button during your show.
+
+Customize to reflect your tone or brand.
+
+Example:
+Givvy is up! Make sure you LIKE & SHARE! Winner announced shortly!
+
+⚡ Flash Sale Text
+Message copied when you click the Flash Sale button.
+
+Use it to hype limited-time deals during your stream.
+
+Example:
+Flash Sale! Grab these deals before they sell out!
+
+✅ Save Settings
+Click to apply and save all custom message templates and Telegram settings.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -9,6 +9,7 @@ import threading
 import sqlite3
 import gc
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QObject, Signal
 from dotenv import load_dotenv
 
 from cloud_database_qt import CloudDatabaseManager
@@ -49,13 +50,14 @@ def log_error(message, exc_info=False):
     logging.error(message, exc_info=exc_info)
     custom_log("ERROR", message)
 
-
+# --------------------------------------------------
+# Environment
+# --------------------------------------------------
 if getattr(sys, 'frozen', False):  # Running as PyInstaller exe
     db_url = os.getenv("DATABASE_URL", "")
     if db_url.startswith("postgres"):
         os.environ["FLASK_ENV"] = "production"
     else:
-        # Don’t raise an error — fall back to local dev
         os.environ["FLASK_ENV"] = "development"
         log_info("Falling back to development mode: DATABASE_URL not found or invalid.")
 else:
@@ -69,6 +71,9 @@ stream_handler.setLevel(logging.INFO)
 stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 
+# --------------------------------------------------
+# SQLite helpers
+# --------------------------------------------------
 def verify_sqlite_file(path):
     try:
         conn = sqlite3.connect(path)
@@ -173,6 +178,9 @@ def create_blank_subscriptions_db(path):
         conn.commit()
         log_info(f"Blank subscriptions_qt.db created at {path}")
 
+# --------------------------------------------------
+# Ports & server wait
+# --------------------------------------------------
 def check_port(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -199,6 +207,27 @@ def wait_for_server(url, timeout=30):
         time.sleep(0.5)
     raise RuntimeError("Flask server did not start in time")
 
+# --------------------------------------------------
+# UI-thread invoker (prevents QObject::setParent / startTimer warnings)
+# --------------------------------------------------
+class UiInvoker(QObject):
+    invoke = Signal(object)  # fn
+
+    def __init__(self, parent=None, log_err=None):
+        super().__init__(parent)
+        self._log_err = log_err or (lambda *_: None)
+        self.invoke.connect(self._run)
+
+    def _run(self, fn):
+        try:
+            if callable(fn):
+                fn()
+        except Exception as e:
+            self._log_err(f"invoke_on_ui error: {e}")
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
 def main():
     log_info("Starting SwiftSale GUI")
     install_info = get_or_create_install_info()
@@ -207,7 +236,7 @@ def main():
 
     # Prompt for real email if still using default trial email
     if user_email == "trial@swiftsaleapp.com":
-        from PySide6.QtWidgets import QInputDialog
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
         email, ok = QInputDialog.getText(None, "Enter Your Email", "Please enter your SwiftSale email:")
         if ok and email:
             user_email = email.strip().lower()
@@ -215,12 +244,10 @@ def main():
             save_install_info(user_email, install_info.get("install_id"), install_info.get("tier"))
             log_info(f"User email set to: {user_email}")
 
-            # Auto-update installs table with hashed_email -> tier mapping
+            # Optional: device limit (cloud only)
             try:
-                # Enforce 2-device limit
                 if os.getenv("FLASK_ENV") == "production":
                     import hashlib
-                    from PySide6.QtWidgets import QMessageBox
                     from cloud_database_qt import CloudDatabaseManager
 
                     hashed_email = hashlib.sha256(user_email.strip().lower().encode()).hexdigest()
@@ -251,10 +278,10 @@ def main():
                                     sys.exit(1)
                     cloud_db_tmp.close()
             except Exception as e:
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.critical(None, "Database Error", f"Device limit check failed:\n{e}")
                 sys.exit(1)
 
-            
     config = load_config()
     redacted = {k: ("<REDACTED>" if any(x in k for x in ["KEY", "TOKEN", "SECRET"]) else v) for k, v in config.items()}
     log_info(f"Loaded config: {redacted}")
@@ -282,7 +309,7 @@ def main():
         stripe_secret_key=config["STRIPE_SECRET_KEY"],
         webhook_secret=config["STRIPE_WEBHOOK_SECRET"],
         api_token=config["API_TOKEN"],
-        db_manager=bidder_manager 
+        db_manager=bidder_manager
     )
 
     telegram_service = TelegramService(
@@ -302,6 +329,7 @@ def main():
         except Exception as e:
             log_error(f"Failed to initialize CloudDatabaseManager: {e}", exc_info=True)
 
+    # Start Flask (Waitress) in background thread
     flask_server = FlaskServer(
         port=port,
         stripe_service=stripe_service,
@@ -316,13 +344,14 @@ def main():
     )
     threading.Thread(target=flask_server.start, daemon=True).start()
     wait_for_server(f"http://localhost:{port}/health")
- 
+
+    # Build GUI
     gui = SwiftSaleGUI(
-        stripe_service=stripe_service,  # Pass stripe_service instead of None
+        stripe_service=stripe_service,
         api_token=config["API_TOKEN"],
         user_email=user_email,
         base_url=config["APP_BASE_URL"],
-        dev_unlock_code = config.get("DEV_UNLOCK_CODE", ""),
+        dev_unlock_code=config.get("DEV_UNLOCK_CODE", ""),
         telegram_bot_token=config.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=config.get("TELEGRAM_CHAT_ID", ""),
         dev_access_granted=False,
@@ -336,6 +365,29 @@ def main():
     gui.cloud_db = cloud_db
     gui.telegram_service = telegram_service
 
+    # Safe UI invoker (use this from ANY background thread)
+    ui_invoker = UiInvoker(parent=gui, log_err=log_error)
+    gui.invoke_on_ui = lambda fn: ui_invoker.invoke.emit(fn)
+
+    # --- Socket.IO client: force polling & keep UI updates on main thread ---
+    try:
+        # Optional: lightweight client-side event hooks (no direct Qt calls)
+        gui.sio.on('connect', lambda: log_info("Socket.IO connected"))
+        gui.sio.on('disconnect', lambda: log_info("Socket.IO disconnected"))
+
+        # Example listener: if you want a tiny heads-up on wins, marshal to UI first
+        def _on_winner(data):
+            username = (data or {}).get("username") or "unknown"
+            gui.invoke_on_ui(lambda: gui.show_temporary_message(f"Winner: {username}"))
+
+        gui.sio.on('winner', _on_winner)
+
+        # Connect using polling only (Waitress cannot upgrade to websockets)
+        gui.sio.connect(config["APP_BASE_URL"], transports=['polling'], wait_timeout=3)
+        log_info("Socket.IO client connected (polling)")
+    except Exception as e:
+        log_error(f"Socket.IO connect failed: {e}")
+
     # Sync cloud install info (tier/license) into local
     if cloud_db and user_email:
         try:
@@ -344,7 +396,10 @@ def main():
             install_info["tier"] = tier
             save_install_info(user_email, install_info.get("install_id"), tier)
             log_info(f"[SYNC] Synced and saved cloud tier '{tier}' for {user_email}")
-            gui.show_toast(f"✔ License Verified – {tier} Tier")
+            try:
+                gui.invoke_on_ui(lambda: gui.show_temporary_message(f"✔ License Verified – {tier} Tier"))
+            except Exception:
+                pass
         except Exception as e:
             log_error(f"Cloud sync failed for {user_email}: {e}")
 
@@ -352,6 +407,13 @@ def main():
 
     def on_closing():
         try:
+            # Cleanly disconnect Socket.IO
+            if getattr(gui, "sio", None):
+                try:
+                    if gui.sio.connected:
+                        gui.sio.disconnect()
+                except Exception:
+                    pass
             if cloud_db:
                 cloud_db.close()
             telegram_service.close()

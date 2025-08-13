@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QFrame, QLabel, QPushButton, QLineEdit, QCheckBox, QTextEdit, QTextBrowser,
     QTableWidget, QScrollBar, QTabWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QSizePolicy, QTreeWidget, QTreeWidgetItem,
-    QSpacerItem, QWidget, QStatusBar, QApplication
+    QSpacerItem, QWidget, QStatusBar, QApplication, QComboBox
 )
 from PySide6.QtCore import Qt, QRegularExpression
 from PySide6.QtGui import QPixmap, QFont, QCursor, QRegularExpressionValidator
@@ -379,13 +379,95 @@ def setup_ui(main_window, is_dev_mode=None):
     main_window.notebook.addTab(main_window.annotate_frame, "Annotate Labels")
     main_layout.addWidget(main_window.notebook)
 
-    # Initialize tab content
+    # Initialize tab content (existing)
     main_window.build_settings_ui(main_window.settings_frame)
     main_window.settings_initialized = True
     main_window.build_subscription_ui(main_window.subscription_frame)
     main_window.subscription_initialized = True
     main_window.build_annotate_ui(main_window.annotate_frame)
     main_window.annotate_initialized = True
+
+    # ------------------------------------------------------------------
+    # NEW: Browser Bridge panel inside Settings tab
+    # ------------------------------------------------------------------
+    try:
+        settings_layout = main_window.settings_frame.layout()
+        if settings_layout is None:
+            settings_layout = QVBoxLayout(main_window.settings_frame)
+
+        bridge_group = QGroupBox("Browser Bridge (Whatnot Winner Capture)")
+        bridge_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        bridge_layout = QGridLayout(bridge_group)
+        bridge_layout.setContentsMargins(12, 12, 12, 12)
+        bridge_layout.setSpacing(8)
+
+        # Row 0: status
+        main_window.bridge_status_label = QLabel("Bridge: OFF (auto)")
+        main_window.bridge_status_label.setToolTip("Shows the current bridge state reported by the local server")
+        bridge_layout.addWidget(main_window.bridge_status_label, 0, 0, 1, 3)
+
+        # Row 1: enable + mode
+        main_window.bridge_enable_checkbox = QCheckBox("Enable Bridge")
+        main_window.bridge_enable_checkbox.setChecked(getattr(main_window, "bridge_enabled", False))
+        bridge_layout.addWidget(main_window.bridge_enable_checkbox, 1, 0, 1, 1)
+
+        bridge_mode_label = QLabel("Capture Mode:")
+        bridge_layout.addWidget(bridge_mode_label, 1, 1, 1, 1)
+
+        main_window.bridge_mode_combo = QComboBox()
+        main_window.bridge_mode_combo.addItems(["auto", "manual"])
+        # reflect current mode if available
+        current_mode = getattr(main_window, "bridge_mode", "auto")
+        idx = 0 if current_mode == "auto" else 1
+        main_window.bridge_mode_combo.setCurrentIndex(idx)
+        bridge_layout.addWidget(main_window.bridge_mode_combo, 1, 2, 1, 1)
+
+        # Row 2: actions
+        main_window.bridge_queue_btn = QPushButton("Open Miss Queue")
+        main_window.bridge_apply_sticky_btn = QPushButton("Apply Sticky Winner")
+        bridge_layout.addWidget(main_window.bridge_queue_btn, 2, 0, 1, 2)
+        bridge_layout.addWidget(main_window.bridge_apply_sticky_btn, 2, 2, 1, 1)
+
+        # Wire up actions to methods provided in gui_qt.py
+        def on_enable_changed(checked: bool):
+            # We just call the toggle API; the server is the source of truth.
+            # The method flips state; checkbox state is user intent so this is fine.
+            try:
+                main_window.toggle_bridge_enabled()
+            finally:
+                # refresh label + checkbox to whatever server accepted
+                main_window.refresh_bridge_status()
+                # sync checkbox after refresh
+                main_window.bridge_enable_checkbox.setChecked(getattr(main_window, "bridge_enabled", False))
+                # update status text
+                _update_bridge_status_label()
+
+        def on_mode_changed(text: str):
+            try:
+                if text.lower().strip() != getattr(main_window, "bridge_mode", "auto"):
+                    main_window.toggle_bridge_mode()
+            finally:
+                main_window.refresh_bridge_status()
+                # sync combo to server truth
+                m = getattr(main_window, "bridge_mode", "auto")
+                main_window.bridge_mode_combo.setCurrentIndex(0 if m == "auto" else 1)
+                _update_bridge_status_label()
+
+        def _update_bridge_status_label():
+            en = "ON" if getattr(main_window, "bridge_enabled", False) else "OFF"
+            mode = getattr(main_window, "bridge_mode", "auto")
+            main_window.bridge_status_label.setText(f"Bridge: {en} ({mode})")
+
+        main_window.bridge_enable_checkbox.toggled.connect(on_enable_changed)
+        main_window.bridge_mode_combo.currentTextChanged.connect(on_mode_changed)
+        main_window.bridge_queue_btn.clicked.connect(main_window.open_miss_queue_dialog)
+        main_window.bridge_apply_sticky_btn.clicked.connect(main_window.apply_sticky_winner)
+
+        # Place the group near the top of Settings
+        settings_layout.addWidget(bridge_group)
+        _update_bridge_status_label()
+    except Exception as e:
+        main_window.log_error(f"Failed to build Bridge panel: {e}")
 
     status_bar = QStatusBar()
     footer_text = f"{main_window.tier} | Install ID: {main_window.install_id} | Synced"

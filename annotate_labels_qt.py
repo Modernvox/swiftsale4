@@ -1,106 +1,292 @@
+# -*- coding: utf-8 -*-
 import os
-import sqlite3
-import pdfplumber
-import re
 import io
+import re
 import json
+import sqlite3
+import logging
+from collections import defaultdict
+from datetime import datetime
+
+import pdfplumber
 from PyPDF2 import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
+
 from utils_qt import show_toast
-
 from mailing_list_manager import MailingListManager
-from datetime import datetime
 from parse_utils import parse_packing_slip_address, extract_spent_amount
-from collections import defaultdict
-label_counts = defaultdict(int)  # Tracks how many times each username appears
 
+# Prefer app’s data dir for settings storage (cross-platform safe)
+try:
+    from config_qt import DEFAULT_DATA_DIR as _SSA_DATA_DIR
+except Exception:
+    _SSA_DATA_DIR = os.path.join(os.path.expanduser("~"), "SwiftSaleApp")
 
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------
+# PDF + UI constants
+# ------------------------------------------------------------
 LABEL_WIDTH = 4 * inch
 LABEL_HEIGHT = 6 * inch
 PAGE_SIZE = (LABEL_WIDTH, LABEL_HEIGHT)
-SETTINGS_FILE = os.path.join(os.getenv("LOCALAPPDATA"), "SwiftSale", "pdf_paths.json")
+SETTINGS_FILE = os.path.join(_SSA_DATA_DIR, "pdf_paths.json")
 
+# ------------------------------------------------------------
+# Username extraction: robust, layout-aware
+# ------------------------------------------------------------
+USERNAME_RE            = re.compile(r"\(([A-Za-z0-9._-]+)\)")
+USERNAME_INLINE_RE     = re.compile(r"(.+?)\s*\(([A-Za-z0-9._-]+)\)")
+START_USERNAME_RE      = re.compile(r"^\(\s*([A-Za-z0-9._-]+)\s*\)")
+NEW_BUYER_PARENS_RE    = re.compile(r"\(\s*new\s+buyer\s*!\s*\)", re.IGNORECASE)
+
+ANCHOR_KEYWORDS = [
+    "ships to:", "ship to:", "pickup to:", "pickup address:", "pickup:",
+    "shipping address:", "sold to:"
+]
+
+def _group_words_into_lines(plumber_page, y_tol=2.0):
+    """Group words into visual lines using vertical proximity."""
+    words = plumber_page.extract_words(use_text_flow=True, keep_blank_chars=False)
+    if not words:
+        return []
+    words.sort(key=lambda w: (w.get("top", 0), w.get("x0", 0)))
+    lines, current_line = [], [words[0]]
+    current_y = words[0].get("top", 0)
+    for w in words[1:]:
+        y = w.get("top", 0)
+        if abs(y - current_y) <= y_tol:
+            current_line.append(w)
+        else:
+            lines.append(current_line)
+            current_line = [w]
+            current_y = y
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+def _line_text_from_words(line_words):
+    s = " ".join(w.get("text", "") for w in line_words)
+    s = s.replace("( ", "(").replace(" )", ")")
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+def _find_anchor_rows(lines_text_lower):
+    return [i for i, txt in enumerate(lines_text_lower) if any(kw in txt for kw in ANCHOR_KEYWORDS)]
+
+def _prev_nonempty_nonanchor_line(lines_text, lines_text_lower, i, anchors_set):
+    j = i - 1
+    while j >= 0:
+        if j not in anchors_set and lines_text[j].strip() and not NEW_BUYER_PARENS_RE.fullmatch(lines_text_lower[j]):
+            return lines_text[j]
+        j -= 1
+    return None
+
+def _extract_username_from_lines(lines_text, lines_text_lower, start_idx=0, max_ahead=8):
+    """
+    Scan forward from an anchor line for:
+      A) Name (username)
+      B) (username) alone on a line
+      C) (username) at start of a line followed by address
+    Returns (username_lower, first_name) or (None, None)
+    """
+    anchors_set = set(_find_anchor_rows(lines_text_lower))
+    for offset in range(1, max_ahead + 1):
+        i = start_idx + offset
+        if i >= len(lines_text):
+            break
+
+        line = lines_text[i]
+        line_lower = lines_text_lower[i]
+
+        if NEW_BUYER_PARENS_RE.fullmatch(line_lower):
+            continue
+
+        m_inline = USERNAME_INLINE_RE.search(line)
+        if m_inline:
+            u = m_inline.group(2).strip().lower()
+            if u != "new buyer!":
+                first = (m_inline.group(1) or "").strip().split()[0] or None
+                return u, first
+
+        m_only = re.fullmatch(r"\(\s*([A-Za-z0-9._-]+)\s*\)", line)
+        if m_only:
+            u = m_only.group(1).strip().lower()
+            if u != "new buyer!":
+                prev_line = _prev_nonempty_nonanchor_line(lines_text, lines_text_lower, i, anchors_set)
+                first = prev_line.split()[0] if prev_line else None
+                return u, first
+
+        m_start = START_USERNAME_RE.match(line)
+        if m_start:
+            u = m_start.group(1).strip().lower()
+            if u != "new buyer!":
+                prev_line = _prev_nonempty_nonanchor_line(lines_text, lines_text_lower, i, anchors_set)
+                first = prev_line.split()[0] if prev_line else None
+                return u, first
+    return None, None
+
+def extract_username_and_pickup_firstname_from_page(plumber_page):
+    """Primary extractor using positioned words; falls back to text-only."""
+    lines_words = _group_words_into_lines(plumber_page, y_tol=2.0)
+    if not lines_words:
+        page_text = plumber_page.extract_text() or ""
+        return extract_username_and_pickup_firstname(page_text)
+
+    lines_text = [_line_text_from_words(ws) for ws in lines_words]
+    lines_text_lower = [lt.lower() for lt in lines_text]
+
+    for anchor_idx in _find_anchor_rows(lines_text_lower):
+        u, first = _extract_username_from_lines(lines_text, lines_text_lower, start_idx=anchor_idx, max_ahead=10)
+        if u:
+            return u, first
+
+    # global fallback pass
+    for i, line in enumerate(lines_text):
+        ll = lines_text_lower[i]
+        if NEW_BUYER_PARENS_RE.fullmatch(ll):
+            continue
+        m_inline = USERNAME_INLINE_RE.search(line)
+        if m_inline:
+            u = m_inline.group(2).strip().lower()
+            if u != "new buyer!":
+                first = (m_inline.group(1) or "").strip().split()[0] or None
+                return u, first
+        m_only = re.fullmatch(r"\(\s*([A-Za-z0-9._-]+)\s*\)", line)
+        if m_only:
+            u = m_only.group(1).strip().lower()
+            if u != "new buyer!":
+                prev_line = lines_text[i - 1] if i - 1 >= 0 else None
+                first = prev_line.split()[0] if prev_line else None
+                return u, first
+        m_start = START_USERNAME_RE.match(line)
+        if m_start:
+            u = m_start.group(1).strip().lower()
+            if u != "new buyer!":
+                prev_line = lines_text[i - 1] if i - 1 >= 0 else None
+                first = prev_line.split()[0] if prev_line else None
+                return u, first
+
+    # last resort
+    page_text = plumber_page.extract_text() or ""
+    return extract_username_and_pickup_firstname(page_text)
 
 def extract_username_and_pickup_firstname(page_text: str):
-    lines = page_text.splitlines()
+    """Legacy text-only extractor as a backstop."""
+    lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+    lowers = [l.lower() for l in lines]
 
-    # Step 1: Try lines near 'ships to' or 'pickup to'
-    for idx, line in enumerate(lines):
-        trimmed = line.strip().lower()
-        if (
-            trimmed.startswith("ships to:") or
-            trimmed.startswith("pickup to:") or
-            trimmed.startswith("pickup address:")
-        ):
-            for offset in range(1, 6):
-                i = idx + offset
-                if i >= len(lines):
-                    break
-                current = lines[i].strip()
+    anchor_idxs = [i for i, l in enumerate(lowers) if any(kw in l for kw in ANCHOR_KEYWORDS)]
+    if anchor_idxs:
+        idx = anchor_idxs[0]
+        for offset in range(1, 10):
+            i = idx + offset
+            if i >= len(lines):
+                break
+            cur = lines[i]
+            curl = lowers[i]
 
-                # Match (username)
-                m1 = re.fullmatch(r"\(([\w\d._-]+)\)", current)
-                if m1:
-                    username = m1.group(1).strip().lower()
-                    if username != "new buyer!":
-                        prev_line = lines[i - 1].strip() if i > 0 else ""
-                        first_name = prev_line.split()[0] if prev_line else None
-                        return username, first_name
+            if NEW_BUYER_PARENS_RE.fullmatch(curl):
+                continue
 
-                # Match Name (username)
-                m2 = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([\w\d._-]+)\)", current)
-                if m2:
-                    first_name = m2.group(1).strip() if m2.group(1) else None
-                    username = m2.group(2).strip().lower()
-                    if username != "new buyer!":
-                        return username, first_name
+            m2 = USERNAME_INLINE_RE.search(cur)
+            if m2:
+                first = (m2.group(1) or "").strip().split()[0] or None
+                u = m2.group(2).strip().lower()
+                if u != "new buyer!":
+                    return u, first
 
-            break  # stop after first match block
+            m_only = re.fullmatch(r"\(\s*([A-Za-z0-9._-]+)\s*\)", cur)
+            if m_only:
+                u = m_only.group(1).strip().lower()
+                if u != "new buyer!":
+                    prev = lines[i - 1] if i - 1 >= 0 else ""
+                    if prev and not any(kw in prev.lower() for kw in ANCHOR_KEYWORDS):
+                        first = prev.split()[0] if prev else None
+                    else:
+                        first = None
+                    return u, first
 
-    # Step 2: Fallback — scan entire page for any (username) pattern
-    for idx, line in enumerate(lines):
-        current = line.strip()
+            m_start = START_USERNAME_RE.match(cur)
+            if m_start:
+                u = m_start.group(1).strip().lower()
+                if u != "new buyer!":
+                    prev = lines[i - 1] if i - 1 >= 0 else ""
+                    if prev and not any(kw in prev.lower() for kw in ANCHOR_KEYWORDS):
+                        first = prev.split()[0]
+                    else:
+                        first = None
+                    return u, first
 
-        m1 = re.fullmatch(r"\(([\w\d._-]+)\)", current)
-        if m1:
-            username = m1.group(1).strip().lower()
-            if username != "new buyer!":
-                prev_line = lines[idx - 1].strip() if idx > 0 else ""
-                first_name = prev_line.split()[0] if prev_line else None
-                return username, first_name
+    # global fallback
+    for i, line in enumerate(lines):
+        ll = lowers[i]
+        if NEW_BUYER_PARENS_RE.fullmatch(ll):
+            continue
 
-        m2 = re.search(r"([A-Za-z]+\s+[A-Za-z]+)?\s*\(([\w\d._-]+)\)", current)
+        m2 = USERNAME_INLINE_RE.search(line)
         if m2:
-            first_name = m2.group(1).strip() if m2.group(1) else None
-            username = m2.group(2).strip().lower()
-            if username != "new buyer!":
-                return username, first_name
+            first = (m2.group(1) or "").strip().split()[0] or None
+            u = m2.group(2).strip().lower()
+            if u != "new buyer!":
+                return u, first
+
+        m_only = re.fullmatch(r"\(\s*([A-Za-z0-9._-]+)\s*\)", line)
+        if m_only:
+            u = m_only.group(1).strip().lower()
+            if u != "new buyer!":
+                prev = lines[i - 1] if i - 1 >= 0 else ""
+                first = prev.split()[0] if prev else None
+                return u, first
+
+        m_start = START_USERNAME_RE.match(line)
+        if m_start:
+            u = m_start.group(1).strip().lower()
+            if u != "new buyer!":
+                prev = lines[i - 1] if i - 1 >= 0 else ""
+                first = prev.split()[0] if prev else None
+                return u, first
 
     return None, None
 
-
+# ------------------------------------------------------------
+# Settings helpers
+# ------------------------------------------------------------
 def remember_folder_path(folder):
-    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump({"last_pdf_folder": folder}, f)
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_pdf_folder": folder}, f)
+    except Exception as e:
+        logger.warning(f"Failed to remember folder path: {e}")
 
 def get_last_folder():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            return json.load(f).get("last_pdf_folder")
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("last_pdf_folder") or os.path.expanduser("~")
+    except Exception as e:
+        logger.warning(f"Failed to load last folder path: {e}")
     return os.path.expanduser("~")
 
+# ------------------------------------------------------------
+# Qt entry
+# ------------------------------------------------------------
 def annotate_labels_qt(parent, db_path):
+    """Qt front-end: prompt for input PDF + output path, run annotator, and show toast."""
     folder_hint = get_last_folder()
     input_pdf_path, _ = QFileDialog.getOpenFileName(parent, "Select Whatnot PDF", folder_hint, "PDF Files (*.pdf)")
     if not input_pdf_path:
         return
 
-    output_pdf_path, _ = QFileDialog.getSaveFileName(parent, "Save Annotated PDF", folder_hint, "PDF Files (*.pdf)")
+    # Suggest an annotated filename by default
+    base_dir, base_name = os.path.dirname(input_pdf_path), os.path.basename(input_pdf_path)
+    suggested = os.path.join(base_dir, base_name.replace(".pdf", "_annotated.pdf"))
+    output_pdf_path, _ = QFileDialog.getSaveFileName(parent, "Save Annotated PDF", suggested, "PDF Files (*.pdf)")
     if not output_pdf_path:
         return
 
@@ -115,15 +301,58 @@ def annotate_labels_qt(parent, db_path):
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(output_pdf_path))
 
-        msg = f"Annotated PDF created successfully."
+        msg = "Annotated PDF created successfully."
         if skipped_pages:
-            msg += f"\nSkipped {len(skipped_pages)} pages with unknown usernames."
-
+            msg += f"\nSkipped {len(skipped_pages)} page(s) with unknown usernames or addresses."
         show_toast(parent, msg, icon_path="icons/stamp_icon.png")
-
     except Exception as e:
-        QMessageBox.critical(parent, "Annotation Error", f"Failed to annotate PDF: {e}")
+        logger.exception("Annotation failed")
+        QMessageBox.critical(parent, "Annotation Error", f"Failed to annotate PDF:\n\n{e}")
 
+# ------------------------------------------------------------
+# Core annotator
+# ------------------------------------------------------------
+def _load_bin_and_firstname_maps(bidders_db_path: str):
+    """
+    Load:
+      • bin_map: username(lower) -> bin_number
+      • fname_map: username(lower) -> first_name (latest non-null)
+    Both maps may be empty on error.
+    """
+    bin_map, fname_map = {}, {}
+    if not bidders_db_path or not os.path.exists(bidders_db_path):
+        logger.warning("bidders_db_path missing or not found: %s", bidders_db_path)
+        return bin_map, fname_map
+
+    try:
+        conn = sqlite3.connect(bidders_db_path)
+        cur = conn.cursor()
+
+        # Bin assignments
+        cur.execute("SELECT username, bin_number FROM bin_assignments;")
+        for u, b in cur.fetchall():
+            if isinstance(u, str) and u.strip():
+                bin_map[u.strip().lower()] = b
+
+        # First names (prefer most recent non-null per user)
+        try:
+            cur.execute("""
+                SELECT LOWER(username), first_name, timestamp
+                FROM bidders
+                WHERE first_name IS NOT NULL AND TRIM(first_name) <> ''
+                ORDER BY datetime(timestamp) DESC
+            """)
+            for u, first, _ in cur.fetchall():
+                if u and u not in fname_map:
+                    fname_map[u] = first.strip()
+        except sqlite3.Error:
+            # Older schemas may not have first_name
+            pass
+
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to read bidders DB: {e}")
+    return bin_map, fname_map
 
 def annotate_whatnot_pdf_with_bins_and_firstname(
     whatnot_pdf_path: str,
@@ -137,161 +366,217 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
     font_size_first: int = 19,
     font_size_default: int = 12
 ) -> list:
-    from collections import defaultdict
-    label_counts = defaultdict(int)
-
-    conn = sqlite3.connect(bidders_db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, bin_number FROM bin_assignments;")
-    bin_map = {row[0].strip().lower(): row[1] for row in cursor.fetchall()}
-    conn.close()
+    """
+    Read Whatnot packing labels and overlay SwiftSale Bin # (and pickup first name).
+    Returns a list of (page_index, reason_or_username) for skipped overlays.
+    """
+    # Preload maps
+    bin_map, fname_map = _load_bin_and_firstname_maps(bidders_db_path)
 
     mailing_list = MailingListManager()
 
-    pdf_reader = PdfReader(whatnot_pdf_path)
+    try:
+        pdf_reader = PdfReader(whatnot_pdf_path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to open input PDF: {e}")
+
     pdf_writer = PdfWriter()
     skipped_pages = []
     saved_usernames = set()
+    label_counts = defaultdict(int)
 
-    with pdfplumber.open(whatnot_pdf_path) as plumber_pdf:
-        current_buyer = None
-        current_first_name = None
-        current_spent_total = 0.0
-        current_address_data = None
+    try:
+        with pdfplumber.open(whatnot_pdf_path) as plumber_pdf:
+            current_buyer = None
+            current_first_name = None
+            current_spent_total = 0.0
+            current_address_data = None
 
-        for page_index, (original_page, plumber_page) in enumerate(zip(pdf_reader.pages, plumber_pdf.pages)):
-            page_text = plumber_page.extract_text() or ""
-            page_text_lower = page_text.lower()
+            for page_index, (original_page, plumber_page) in enumerate(zip(pdf_reader.pages, plumber_pdf.pages)):
+                try:
+                    page_text = plumber_page.extract_text() or ""
+                except Exception:
+                    page_text = ""
 
-            is_pickup = "local pickup order" in page_text_lower or "pickup address:" in page_text_lower
-            is_packing_slip = "packing slip" in page_text_lower
-            is_new_label = is_pickup or is_packing_slip
+                page_text_lower = page_text.lower()
+                is_pickup = ("local pickup order" in page_text_lower) or ("pickup address:" in page_text_lower)
+                is_packing_slip = "packing slip" in page_text_lower
+                is_new_label = is_pickup or is_packing_slip
 
-            spent = extract_spent_amount(page_text)
-            print(f"[DEBUG] Page {page_index + 1} subtotal: ${spent:.2f}")
+                # Track money spent (best-effort)
+                try:
+                    spent = float(extract_spent_amount(page_text) or 0.0)
+                except Exception:
+                    spent = 0.0
 
-            if is_new_label:
-                if current_buyer and current_address_data:
-                    mailing_entry = {
-                        **current_address_data,
-                        "spent": current_spent_total,
-                        "order_date": datetime.today().strftime("%Y-%m-%d"),
-                        "order_id": f"PG{page_index:03}"
-                    }
-                    print(f"[DEBUG] Final mailing entry: {mailing_entry}")
-                    if current_buyer not in saved_usernames:
-                        mailing_list.add_or_update_entry(mailing_entry)
-                        saved_usernames.add(current_buyer)
-                    current_spent_total = 0.0
+                if is_new_label:
+                    # Flush previous buyer to mailing list
+                    if current_buyer and current_address_data:
+                        mailing_entry = {
+                            **current_address_data,
+                            "spent": round(current_spent_total, 2),
+                            "order_date": datetime.today().strftime("%Y-%m-%d"),
+                            "order_id": f"PG{page_index:03}"
+                        }
+                        if current_buyer not in saved_usernames:
+                            try:
+                                mailing_list.add_or_update_entry(mailing_entry)
+                                saved_usernames.add(current_buyer)
+                            except Exception as e:
+                                logger.warning(f"Mailing list write failed: {e}")
+                        current_spent_total = 0.0
 
-                username, full_name = extract_username_and_pickup_firstname(page_text)
-                if not username:
-                    skipped_pages.append((page_index, "no_username"))
-                    pdf_writer.add_page(original_page)
-                    continue
+                    # Extract username + first-name from the block
+                    try:
+                        username, first_name_from_block = extract_username_and_pickup_firstname_from_page(plumber_page)
+                        if not username:
+                            username, first_name_from_block = extract_username_and_pickup_firstname(page_text)
+                    except Exception:
+                        username, first_name_from_block = (None, None)
 
-                address_data = parse_packing_slip_address(page_text)
-                if address_data:
+                    if not username:
+                        skipped_pages.append((page_index, "no_username"))
+                        pdf_writer.add_page(original_page)
+                        continue
+
+                    address_data = parse_packing_slip_address(page_text) or {}
+                    if not address_data or not address_data.get("full_name") or not address_data.get("address_line_1"):
+                        skipped_pages.append((page_index, "no_address_data"))
+                        pdf_writer.add_page(original_page)
+                        continue
+
+                    # Normalize city like "Area: Dallas"
                     city_val = address_data.get("city")
                     if city_val and isinstance(city_val, str) and city_val.lower().startswith("area:"):
                         address_data["city"] = city_val.split(":", 1)[-1].strip()
+
+                    current_buyer = username.lower().strip()
+                    label_counts[current_buyer] += 1
+
+                    # First name precedence: block -> DB -> full_name -> None
+                    current_first_name = first_name_from_block
+                    if not current_first_name:
+                        current_first_name = fname_map.get(current_buyer)
+                    if not current_first_name:
+                        full_name = address_data.get("full_name") or ""
+                        if full_name:
+                            current_first_name = full_name.split()[0]
+
+                    pickup_note = "PICK UP" if is_pickup else (address_data.get("address_line_2") or "")
+                    current_address_data = {
+                        "full_name": address_data["full_name"],
+                        "username": current_buyer,
+                        "email": "",
+                        "address_line_1": address_data["address_line_1"],
+                        "address_line_2": pickup_note,
+                        "city": address_data.get("city", ""),
+                        "state": address_data.get("state", ""),
+                        "zip_code": address_data.get("zip_code", "")
+                    }
+                    current_spent_total = spent
                 else:
-                    skipped_pages.append((page_index, "no_address_data"))
-                    print(f"[DEBUG] Skipped: address parse failed for {username}")
-                    pdf_writer.add_page(original_page)
-                    continue
+                    if current_buyer:
+                        current_spent_total += spent
 
-                current_buyer = username.lower()
-                label_counts[current_buyer] += 1
-                current_first_name = full_name
+                # --- overlay ---
+                draw_overlay = is_new_label
+                bin_number = bin_map.get(current_buyer) if current_buyer else None
 
-                pickup_note = "PICK UP" if is_pickup else address_data.get("address_line_2", "")
-                current_address_data = {
-                    "full_name": address_data["full_name"],
-                    "username": current_buyer,
-                    "email": "",
-                    "address_line_1": address_data["address_line_1"],
-                    "address_line_2": pickup_note,
-                    "city": address_data["city"],
-                    "state": address_data["state"],
-                    "zip_code": address_data["zip_code"]
+                if draw_overlay:
+                    try:
+                        packet = io.BytesIO()
+                        can = canvas.Canvas(packet, pagesize=PAGE_SIZE)
+
+                        if bin_number:
+                            # "SwiftSale App Bin: #123"
+                            label_text = "SwiftSale App Bin:"
+                            can.setFont(font_name, font_size_app)
+                            can.drawString(stamp_x, stamp_y + font_size_first + 4, label_text)
+
+                            label_width = can.stringWidth(label_text, font_name, font_size_app)
+                            can.setFont(font_name, font_size_bin + 16)
+                            can.drawString(stamp_x + label_width + 22, stamp_y + font_size_first - 4, f"#{bin_number}")
+
+                            # Always print buyer first name on Local Pickup labels
+                            if is_pickup and current_first_name:
+                                can.setFont(font_name, font_size_first)
+                                can.drawString(0.40 * inch, 4.72 * inch, f"****{current_first_name}****")
+                        else:
+                            # Unknown bin: leave a helpful hint on the label
+                            skipped_pages.append((page_index, current_buyer or "unknown"))
+                            can.setFont(font_name, font_size_app)
+                            app_label = "SwiftSale App:"
+                            can.drawString(stamp_x, stamp_y + font_size_first + 8, app_label)
+                            text_width = can.stringWidth(app_label, font_name, font_size_app)
+                            can.setFont(font_name, font_size_default)
+                            can.drawString(stamp_x + text_width + 10, stamp_y + font_size_first + 4, "No bin (Givvy/Flash?)")
+
+                        can.save()
+                        packet.seek(0)
+                        overlay_pdf = PdfReader(packet)
+                        overlay_page = overlay_pdf.pages[0]
+
+                        # Merge overlay
+                        try:
+                            original_page.merge_page(overlay_page)  # pypdf / PyPDF2 >= 2.0
+                        except AttributeError:
+                            original_page.mergePage(overlay_page)   # older PyPDF2 fallback
+
+                    except Exception as e:
+                        logger.warning(f"Overlay failed on page {page_index}: {e}")
+
+                pdf_writer.add_page(original_page)
+
+            # Final flush to mailing list for last buyer
+            if current_buyer and current_address_data and current_buyer not in saved_usernames:
+                mailing_entry = {
+                    **current_address_data,
+                    "spent": round(current_spent_total, 2),
+                    "order_date": datetime.today().strftime("%Y-%m-%d"),
+                    "order_id": f"PG{len(pdf_reader.pages):03}"
                 }
-                current_spent_total = spent
-            else:
-                if current_buyer:
-                    current_spent_total += spent
+                try:
+                    mailing_list.add_or_update_entry(mailing_entry)
+                except Exception as e:
+                    logger.warning(f"Mailing list write (final) failed: {e}")
 
-            draw_overlay = is_new_label
-            bin_number = bin_map.get(current_buyer)
+    except Exception as e:
+        logger.exception("PDF processing failed")
+        raise
 
-            if draw_overlay:
-                packet = io.BytesIO()
-                can = canvas.Canvas(packet, pagesize=PAGE_SIZE)
+    # Summary page for duplicates (same buyer across multiple labels)
+    try:
+        duplicates = {u: c for u, c in label_counts.items() if c > 1}
+        if duplicates:
+            packet = io.BytesIO()
+            c = canvas.Canvas(packet, pagesize=PAGE_SIZE)
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(0.5 * inch, 5.5 * inch, "Multiple Labels Detected for these Buyers/Bins")
 
-                if bin_number:
-                    label_text = "SwiftSale App Bin: "
-                    can.setFont(font_name, font_size_app)
-                    can.drawString(stamp_x, stamp_y + font_size_first + 4, label_text)
+            y = 4.9 * inch
+            for username, count in sorted(duplicates.items()):
+                bin_number = bin_map.get(username, "N/A")
+                c.setFont("Helvetica", 14)
+                c.drawString(0.5 * inch, y, f"{username} — Bin #{bin_number} (x{count})")
+                y -= 0.3 * inch
+                if y < 1.0 * inch:
+                    c.showPage()
+                    y = 5.5 * inch
 
-                    label_width = can.stringWidth(label_text, font_name, font_size_app)
-                    can.setFont(font_name, font_size_bin + 16)
-                    can.drawString(stamp_x + label_width + 30, stamp_y + font_size_first - 4, f"#{bin_number}")
+            c.save()
+            packet.seek(0)
+            summary_pdf = PdfReader(packet)
+            for page in summary_pdf.pages:
+                pdf_writer.add_page(page)
+    except Exception as e:
+        logger.warning(f"Failed to append duplicates summary: {e}")
 
-                    if is_pickup and current_first_name:
-                        can.setFont(font_name, font_size_first)
-                        can.drawString(0.40 * inch, 4.72 * inch, f"****{current_first_name}****")
-                else:
-                    skipped_pages.append((page_index, current_buyer or "unknown"))
-                    can.setFont(font_name, font_size_app)
-                    app_label = "SwiftSale App:"
-                    can.drawString(stamp_x, stamp_y + font_size_first + 8, app_label)
-                    text_width = can.stringWidth(app_label, font_name, font_size_app)
-                    can.setFont(font_name, font_size_default)
-                    can.drawString(stamp_x + text_width + 10, stamp_y + font_size_first + 4, "Givvy or Flash Sale?")
-
-                can.save()
-                packet.seek(0)
-                overlay_pdf = PdfReader(packet)
-                overlay_page = overlay_pdf.pages[0]
-                original_page.merge_page(overlay_page)
-
-            pdf_writer.add_page(original_page)
-
-        if current_buyer and current_address_data and current_buyer not in saved_usernames:
-            mailing_entry = {
-                **current_address_data,
-                "spent": current_spent_total,
-                "order_date": datetime.today().strftime("%Y-%m-%d"),
-                "order_id": f"PG{len(pdf_reader.pages):03}"
-            }
-            print(f"[DEBUG] Final mailing entry (EOF): {mailing_entry}")
-            mailing_list.add_or_update_entry(mailing_entry)
-
-    # Summary page for duplicate bins
-    duplicates = {u: c for u, c in label_counts.items() if c > 1}
-    if duplicates:
-        packet = io.BytesIO()
-        c = canvas.Canvas(packet, pagesize=PAGE_SIZE)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(0.5 * inch, 5.5 * inch, "⚠️ Multiple Labels Detected")
-
-        y = 5.2 * inch
-        for username, count in sorted(duplicates.items()):
-            bin_number = bin_map.get(username, "N/A")
-            c.setFont("Helvetica", 13)
-            c.drawString(0.5 * inch, y, f"{username} — Bin #{bin_number} (x{count})")
-            y -= 0.3 * inch
-            if y < 1.0 * inch:
-                c.showPage()
-                y = 5.5 * inch
-
-        c.save()
-        packet.seek(0)
-        summary_pdf = PdfReader(packet)
-        for page in summary_pdf.pages:
-            pdf_writer.add_page(page)
-
-    with open(output_pdf_path, "wb") as out_f:
-        pdf_writer.write(out_f)
+    # Write output PDF
+    try:
+        os.makedirs(os.path.dirname(output_pdf_path), exist_ok=True)
+        with open(output_pdf_path, "wb") as out_f:
+            pdf_writer.write(out_f)
+    except Exception as e:
+        raise RuntimeError(f"Failed to write output PDF: {e}")
 
     return skipped_pages

@@ -1,23 +1,25 @@
 import os
-import socketio
 import hashlib
 import logging
 import requests
 from datetime import timedelta, datetime
 
-
-from cloud_database_qt import CloudDatabaseManager
+import socketio
 from PySide6.QtWidgets import (
     QMainWindow, QFrame, QLabel, QPushButton, QLineEdit, QCheckBox, QComboBox,
     QTextEdit, QTableWidget, QTreeWidgetItem, QScrollBar, QTabWidget, QVBoxLayout,
     QHBoxLayout, QGridLayout, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
-    QTextBrowser, QDialog, QApplication, QSizePolicy
+    QTextBrowser, QDialog, QApplication, QSizePolicy, QListWidget, QListWidgetItem
 )
-from cloud_database_qt import CloudDatabaseManager
-
 from PySide6.QtGui import QPixmap, QFont, QCursor, QClipboard, QKeySequence, QShortcut, QDesktopServices
-from PySide6.QtCore import Qt, QTimer, Signal, QUrl
-from config_qt import get_resource_path, load_config, get_config_value, DEFAULT_DATA_DIR, TIER_LIMITS, load_install_info, save_install_info
+from PySide6.QtCore import Qt, QTimer, Signal, QUrl, QSettings
+
+from version import __version__
+from cloud_database_qt import CloudDatabaseManager
+from config_qt import (
+    get_resource_path, load_config, get_config_value, DEFAULT_DATA_DIR,
+    TIER_LIMITS, load_install_info, save_install_info
+)
 from bidder_manager_qt import BidderManager
 from telegram_qt import TelegramService
 from flask_server_qt import FlaskServer
@@ -42,6 +44,7 @@ from gui_toggle import bind_toggle_methods
 
 load_dotenv()
 
+
 class AutoPasteLineEdit(QLineEdit):
     autoPasted = Signal(str)
 
@@ -53,26 +56,38 @@ class AutoPasteLineEdit(QLineEdit):
             self.setText(text)
             self.autoPasted.emit(text)
 
+
 class SwiftSaleGUI(QMainWindow):
-    def __init__(self, stripe_service, api_token, user_email, base_url, dev_unlock_code, telegram_bot_token, telegram_chat_id, dev_access_granted, log_info, log_error, bidder_manager, bidders_db_path, subs_db_path):
+    def __init__(
+        self, stripe_service, api_token, user_email, base_url, dev_unlock_code,
+        telegram_bot_token, telegram_chat_id, dev_access_granted, log_info,
+        log_error, bidder_manager, bidders_db_path, subs_db_path
+    ):
         super().__init__()
 
         self.default_x_offset_in = .40
         self.default_y_offset_in = 5.4
 
-        self.current_version = "4"
+        self.current_version = __version__
         self.dev_access_granted = dev_access_granted
         self.log_info = log_info
         self.log_error = log_error
         self.stripe_service = stripe_service
         self.api_token = api_token.strip()
-        self.base_url = base_url
+        self.base_url = (base_url or "").rstrip("/")
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
         self.cloud_db = None
         self.bidder_manager = bidder_manager
         self.bidders_db_path = bidders_db_path
         self.subs_db_path = subs_db_path
+
+        # Bridge runtime state (read from server on launch)
+        self.bridge_enabled = False
+        self.bridge_mode = "manual"  # "auto" | "manual" (default Manual unless server says otherwise)
+
+        # App settings (persist UI prefs)
+        self.qsettings = QSettings("SwiftSaleApp", "SwiftSaleAppV4")
 
         config = load_config()
         install_config = load_install_info()
@@ -95,8 +110,9 @@ class SwiftSaleGUI(QMainWindow):
         self.tier = install_config.get('tier', 'Trial')
         self.license_key = ""
 
+        # Expired local promo -> downgrade to Trial
         promo_exp = install_config.get("promo_expiration")
-        if promo_exp and promo_exp < datetime.utcnow():
+        if promo_exp and isinstance(promo_exp, datetime) and promo_exp < datetime.utcnow():
             self.log_info(f"Promo expired for {self.user_email}; downgrading tier")
             self.tier = "Trial"
             install_config["promo_expiration"] = None
@@ -118,38 +134,28 @@ class SwiftSaleGUI(QMainWindow):
                 self.cloud_db = CloudDatabaseManager(log_info, log_error)
                 if should_verify:
                     hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
-                    cloud_install = self.cloud_db.get_install_by_hashed_email(hashed_email)
+                    cloud_install = self.cloud_db.get_install(hashed_email)  # returns (install_id, tier) or None
                     if cloud_install:
-                        remote_exp = cloud_install.get("promo_expiration")
-                        if remote_exp and remote_exp < datetime.utcnow():
-                            # Remote promo expired; downgrade and clear
-                            self.tier = "Trial"
-                            self.cloud_db.update_install_tier(
-                                hashed_email, self.tier, install_id=self.install_id
-                            )
-                            save_install_info(self.user_email, self.install_id, self.tier)
-                            self.log_info(f"Remote promo expired; downgraded {self.user_email}")
-                        else:
-                            # Sync install ID, tier, and promo expiration locally
-                            self.install_id = cloud_install.get("install_id", self.install_id)
-                            self.tier = cloud_install.get("tier", self.tier)
-                            save_install_info(
-                                self.user_email,
-                                self.install_id,
-                                self.tier,
-                                promo_expiration=remote_exp,
-                            )
-                            self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-                            self.log_info(
-                                f"✅ Synced install from cloud: {self.user_email}, "
-                                f"ID: {self.install_id}, Tier: {self.tier}, promo_exp={remote_exp}"
-                            )
+                        remote_install_id, remote_tier = cloud_install
+                        # Sync local with cloud
+                        if remote_install_id:
+                            self.install_id = remote_install_id
+                        if remote_tier:
+                            self.tier = remote_tier
+                        save_install_info(self.user_email, self.install_id, self.tier)
+                        self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+                        self.log_info(
+                            f"✅ Synced install from cloud: {self.user_email}, "
+                            f"ID: {self.install_id}, Tier: {self.tier}"
+                        )
                     else:
                         self.log_info(f"No cloud record found for {self.user_email}, using local data")
 
                     # Only verify with Stripe if tier is still Trial
                     if self.tier.lower() == "trial":
-                        self.tier, self.license_key = self.stripe_service.verify_subscription(self.user_email, self.tier, self.install_id)
+                        self.tier, self.license_key = self.stripe_service.verify_subscription(
+                            self.user_email, self.tier, self.install_id
+                        )
                         if self.tier != install_config.get('tier'):
                             self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
                             save_install_info(self.user_email, self.install_id, self.tier)
@@ -159,9 +165,8 @@ class SwiftSaleGUI(QMainWindow):
                 self.log_error(f"Cloud sync or Stripe fallback failed: {e}")
                 self.cloud_db = None
 
-
         self.telegram_service = None
-        self.sio = socketio.Client()
+        self.sio = socketio.Client(reconnection=True, reconnection_attempts=0)  # infinite attempts
         self.latest_bin_assignment = '<span style="color:#90ee90;">Waiting for bidder...</span>'
         self.settings_initialized = False
         self.subscription_initialized = False
@@ -189,6 +194,8 @@ class SwiftSaleGUI(QMainWindow):
         self.log_info("bind_settings_methods completed, checking build_settings_ui: " + str(hasattr(self, "build_settings_ui")))
         bind_event_methods(self)
         self.log_info("bind_event_methods completed, checking on_upgrade: " + str(hasattr(self, "on_upgrade")))
+      
+
 
         # Setup UI after binding methods
         setup_ui(self, self.is_dev_mode)
@@ -201,18 +208,19 @@ class SwiftSaleGUI(QMainWindow):
         self.log_info("bind_help_methods completed")
         bind_bidders_methods(self)
         bind_sorting_methods(self)
-        bind_updater_methods(self)
+        bind_updater_methods(self)  # provides self.check_for_updates & updater UI hooks
         self.log_info("bind_updater_methods completed")
 
         # Connect timer
         self.timer.timeout.connect(self.update_timer_display)
 
-        # Load settings from database
+        # Load settings from database once
         try:
             settings = self.bidder_manager.get_settings(self.user_email)
             if settings:
                 self.chat_id = settings.get("chat_id", self.chat_id)
                 self.top_buyer_text = settings.get("top_buyer_text", self.top_buyer_text)
+                # fixed typo: ggiveaway_announcement_text -> giveaway_announcement_text
                 self.giveaway_announcement_text = settings.get("giveaway_announcement_text", self.giveaway_announcement_text)
                 self.flash_sale_announcement_text = settings.get("flash_sale_announcement_text", self.flash_sale_announcement_text)
                 self.multi_buyer_mode = settings.get("multi_buyer_mode", self.multi_buyer_mode)
@@ -221,26 +229,136 @@ class SwiftSaleGUI(QMainWindow):
             self.log_error(f"Failed to load settings: {e}")
 
         self.log_info(f"Initialized user {self.user_email}: tier={self.tier}, license={self.license_key}")
+
+        # Status bar widgets (Auto-capture checkbox)
+        self._init_status_bar()
+        self.install_clipboard_capture()
 
         # Setup connections and shortcuts
         self.setup_connections()
         self.setup_shortcuts()
+
+        # Bridge + Socket
+        self.refresh_bridge_status()  # sync with server; falls back to Manual if server down
+        self.connect_socketio()
+
         self.show()
         self.raise_()
-        try:
-            settings = self.bidder_manager.get_settings(self.user_email)
-            if settings:
-                self.chat_id = settings.get("chat_id", self.chat_id)
-                self.top_buyer_text = settings.get("top_buyer_text", self.top_buyer_text)
-                self.giveaway_announcement_text = settings.get("giveaway_announcement_text", self.giveaway_announcement_text)
-                self.flash_sale_announcement_text = settings.get("flash_sale_announcement_text", self.flash_sale_announcement_text)
-                self.multi_buyer_mode = settings.get("multi_buyer_mode", self.multi_buyer_mode)
-                self.log_info(f"Retrieved settings: {settings}")
-        except Exception as e:
-            self.log_error(f"Failed to load settings: {e}")
 
-        self.log_info(f"Initialized user {self.user_email}: tier={self.tier}, license={self.license_key}")
-  
+    def _build_shortcuts_html(self) -> str:
+        return """
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color:#eaeaea; background:#111; }
+      h2 { margin:.2rem 0 .6rem 0; font-size:1.05rem; color:#fff; }
+      table { width:100%; border-collapse:collapse; }
+      td { padding:6px 8px; border-bottom:1px solid #222; vertical-align:top; }
+      .k { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#1b1b1b; padding:2px 6px; border-radius:6px; }
+      .g { color:#9aa0a6; }
+    </style>
+    <h2>General</h2>
+    <table>
+      <tr><td><span class="k">Ctrl+/</span></td><td>Open this shortcuts panel</td></tr>
+      <tr><td><span class="k">F1</span></td><td>Open shortcuts panel</td></tr>
+      <tr><td><span class="k">Ctrl+C</span></td><td>Clear username/qty/weight</td></tr>
+      <tr><td><span class="k">Ctrl+B</span></td><td>Add bidder</td></tr>
+    </table>
+    <h2>Bridge / Capture</h2>
+    <table>
+      <tr><td><span class="k">Ctrl+Shift+J</span></td><td>Enable/Disable Bridge</td></tr>
+      <tr><td><span class="k">Ctrl+Shift+K</span></td><td>Toggle Auto ↔ Manual</td></tr>
+    </table>
+    <h2>Queue & Sticky</h2>
+    <table>
+      <tr><td><span class="k">Ctrl+Shift+M</span></td><td>Open "Needs Username" queue</td></tr>
+      <tr><td><span class="k">Ctrl+Shift+W</span></td><td>Apply sticky winner now</td></tr>
+    </table>
+    <h2>Promo Code</h2>
+    <table>
+      <tr><td><span class="k">Ctrl+Alt+D</span></td><td>Enter Promo Code</td></tr>
+    </table>
+    <p class="g">Tip: Use the status-bar checkbox to switch Auto-capture on/off quickly.</p>
+    """
+
+    def open_shortcuts_help(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        layout = QVBoxLayout(dlg)
+        view = QTextBrowser()
+        view.setHtml(self._build_shortcuts_html())
+        view.setOpenExternalLinks(True)
+        layout.addWidget(view)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        layout.addWidget(btn, alignment=Qt.AlignRight)
+        dlg.resize(560, 460)
+        dlg.exec()
+
+    # ---------- Helpers: Bridge base URL ----------
+    def _bridge_base(self) -> str:
+        """HTTP base for bridge endpoints; default to localhost if base_url unset."""
+        return self.base_url or "http://127.0.0.1:10000"
+
+    # ---------- Status bar + Auto-capture ----------
+    def _init_status_bar(self):
+        """Add the Auto-capture checkbox to the status bar and bind it."""
+        sb = self.statusBar()
+        # Restore last saved mode (default Manual)
+        saved_mode = str(self.qsettings.value("bridge/mode", "manual")).lower()
+        if saved_mode not in ("auto", "manual"):
+            saved_mode = "manual"
+        self.bridge_mode = saved_mode
+
+        self.auto_capture_checkbox = QCheckBox("Auto-capture usernames", self)
+        self.auto_capture_checkbox.setChecked(self.bridge_mode == "auto")
+        self.auto_capture_checkbox.setToolTip("Checked = Auto, Unchecked = Manual")
+        self.auto_capture_checkbox.stateChanged.connect(self.on_auto_capture_toggled)
+
+        # Keep some spacing so messages still visible
+        spacer = QLabel("   ")
+        sb.addPermanentWidget(spacer)
+        sb.addPermanentWidget(self.auto_capture_checkbox)
+
+        # Reflect in header/footer initially
+        self.update_header_and_footer()
+
+    def _sync_checkbox_from_state(self):
+        """Keep the checkbox in sync with current bridge_mode without firing signals."""
+        if not hasattr(self, "auto_capture_checkbox"):
+            return
+        self.auto_capture_checkbox.blockSignals(True)
+        self.auto_capture_checkbox.setChecked(self.bridge_mode == "auto")
+        self.auto_capture_checkbox.setToolTip(f"Checked = Auto, Unchecked = Manual (Bridge is {'ON' if self.bridge_enabled else 'OFF'})")
+        self.auto_capture_checkbox.blockSignals(False)
+
+    def on_auto_capture_toggled(self, state: int):
+        """POST /bridge/mode with {enabled, mode} when user toggles the checkbox."""
+        desired_mode = "auto" if state == Qt.Checked else "manual"
+        payload = {
+            "enabled": bool(self.bridge_enabled),
+            "mode": desired_mode
+        }
+        try:
+            r = requests.post(f"{self._bridge_base()}/bridge/mode", json=payload, timeout=3)
+            if r.ok and r.json().get("status") == "success":
+                # Accept any server-normalized values if present
+                self.bridge_enabled = bool(r.json().get("enabled", self.bridge_enabled))
+                self.bridge_mode = str(r.json().get("mode", desired_mode))
+                # Persist UI preference
+                self.qsettings.setValue("bridge/mode", self.bridge_mode)
+                self.qsettings.setValue("bridge/auto_capture", self.bridge_mode == "auto")
+                self.statusBar().showMessage(f"Capture mode: {self.bridge_mode.upper()}", 2000)
+            else:
+                QMessageBox.warning(self, "Bridge", "Failed to update capture mode on server.")
+                # Revert checkbox to actual state
+                self._sync_checkbox_from_state()
+        except Exception as e:
+            self.log_error(f"Auto-capture toggle failed: {e}")
+            QMessageBox.warning(self, "Bridge", f"Failed to reach bridge: {e}")
+            # Revert UI; do not crash
+            self._sync_checkbox_from_state()
+        finally:
+            self.update_header_and_footer()
+
     def prompt_for_email(self):
         """Prompt user for email and optionally skip in future if 'Don't ask again' is checked."""
         from config_qt import get_or_create_install_info, save_install_info
@@ -292,15 +410,17 @@ class SwiftSaleGUI(QMainWindow):
 
     def open_mailing_list_dialog(self):
         from mailing_list_manager import MailingListViewer
-
         self.mailing_viewer = MailingListViewer()
         self.mailing_viewer.show()
- 
+
     def register_install(self):
         """Register install with backend and save response."""
         try:
-            base_url = get_config_value("APP_BASE_URL")
-            response = requests.post(f"{self.base_url}/register-install", json={"email": self.user_email})
+            response = requests.post(
+                f"{self._bridge_base()}/register-install",
+                json={"email": self.user_email},
+                timeout=10
+            )
             if response.status_code == 200:
                 data = response.json()
                 self.install_id = data["install_id"]
@@ -308,7 +428,7 @@ class SwiftSaleGUI(QMainWindow):
                 save_install_info(self.user_email, self.install_id, self.tier)
                 self.log_info(f"Registered install: email={self.user_email}, install_id={self.install_id}, tier={self.tier}")
             else:
-                self.log_error(f"Install registration failed: {response.json()}")
+                self.log_error(f"Install registration failed: {response.text}")
                 QMessageBox.critical(self, "Error", "Failed to register install")
         except Exception as e:
             self.log_error(f"Error registering install: {e}")
@@ -335,7 +455,7 @@ class SwiftSaleGUI(QMainWindow):
         if hasattr(self, "toggle_tabs_btn"):
             self.toggle_tabs_btn.clicked.connect(self.toggle_settings_tabs)
         if hasattr(self, "update_btn"):
-            self.update_btn.clicked.connect(self.check_for_updates)
+            self.update_btn.clicked.connect(self.check_for_updates)  # provided by gui_updater
         if hasattr(self, "show_sell_rate_button"):
             self.show_sell_rate_button.clicked.connect(self.show_avg_sell_rate)
         if hasattr(self, "start_giveaway_button"):
@@ -357,6 +477,11 @@ class SwiftSaleGUI(QMainWindow):
         """Stop the timer and close database when closing the window."""
         if self.timer.isActive():
             self.timer.stop()
+        if self.sio.connected:
+            try:
+                self.sio.disconnect()
+            except Exception:
+                pass
         if self.stripe_service and self.stripe_service.db_manager:
             self.stripe_service.db_manager.close()
         event.accept()
@@ -411,7 +536,7 @@ class SwiftSaleGUI(QMainWindow):
 
         # Display status and next billing (if fetched successfully)
         try:
-            r = requests.get(f"{self.base_url}/subscription-status", params={"email": self.user_email}, timeout=5)
+            r = requests.get(f"{self._bridge_base()}/subscription-status", params={"email": self.user_email}, timeout=5)
             data = r.json() if r.ok else {}
             status = data.get("status", "N/A")
             next_billing = data.get("next_billing_date", "N/A")
@@ -536,7 +661,7 @@ class SwiftSaleGUI(QMainWindow):
     def refresh_bin_usage_display(self):
         """Refresh both bin usage label and footer display."""
         try:
-            self.update_bins_used_display()  # <- THIS updates the "Bins Used: X/Y" label
+            self.update_bins_used_display()  # updates the "Bins Used: X/Y" label
 
             # Then update the footer
             bins_used = self.bidder_manager.count_total_bins_assigned()
@@ -585,7 +710,6 @@ class SwiftSaleGUI(QMainWindow):
                 self.bidder_manager.print_bidders()
                 bidders = self.bidder_manager.bidders
 
-            # Ensure the order of insertion respects the incoming bidders dict
             for username, info in bidders.items():
                 parent = QTreeWidgetItem([
                     info["original_username"],
@@ -606,15 +730,11 @@ class SwiftSaleGUI(QMainWindow):
                     parent.addChild(child)
 
             self.bidders_tree.resizeColumnToContents(0)
-            # NOTE: Do NOT re-enable Qt sorting here — it will override our custom order
-            # self.bidders_tree.setSortingEnabled(True)
-
             self.log_info("Updated bidders tree")
 
         except Exception as e:
             self.log_error(f"Failed to populate bidders tree: {e}")
             QMessageBox.critical(self, "Error", f"Failed to update bidders: {e}")
-
 
     def clear_bidders(self):
         """Clear all bidders and update UI."""
@@ -647,12 +767,29 @@ class SwiftSaleGUI(QMainWindow):
             shield = "🛡️"
 
             # Header: User email, tier, and slogan
-            self.header_label.setText(f"SwiftSale - {self.user_email} ({self.tier}) | Build Whatnot Orders in Realtime")
+            self.header_label.setText(
+                f"SwiftSale - {self.user_email} ({self.tier}) | Build Whatnot Orders in Realtime"
+            )
 
-            # Footer: Tier, Install ID, and latest bin
-            self.footer_label.setText(f"{shield} {self.tier} | Install ID: {self.install_id} | Latest Bin: {self.latest_bin_assignment}")
+            # Compose footer: Tier, Install ID, Bins Used, Latest Bin, Bridge
+            try:
+                bins_used = self.bidder_manager.count_total_bins_assigned()
+                max_bins = TIER_LIMITS.get(self.tier, {}).get("bins", 20)
+                bins_part = f" | Bins Used: {bins_used}/{max_bins}"
+            except Exception:
+                bins_part = ""
+
+            latest_part = f" | Latest Bin: {self.latest_bin_assignment}" if self.latest_bin_assignment else ""
+            bridge_part = f" | Bridge: {'ON' if self.bridge_enabled else 'OFF'} ({self.bridge_mode})"
+
+            self.footer_label.setText(
+                f"{shield} {self.tier} | Install ID: {self.install_id}{bins_part}{latest_part}{bridge_part}"
+            )
             self.footer_label.setStyleSheet(f"color: {color}")
-            self.footer_label.setToolTip(f"Install ID: {self.install_id} – {self.tier} Tier")
+            self.footer_label.setToolTip(
+                f"Install ID: {self.install_id} – {self.tier} Tier\n"
+                f"Bridge: {'ON' if self.bridge_enabled else 'OFF'} ({self.bridge_mode})"
+            )
 
             # Settings tab license label
             if hasattr(self, "license_status_label"):
@@ -660,7 +797,16 @@ class SwiftSaleGUI(QMainWindow):
                 self.license_status_label.setStyleSheet(f"color: {color}")
                 self.license_status_label.setToolTip(f"Install ID: {self.install_id}")
 
-            self.log_info("Updated header, footer, and license label")
+            # Keep checkbox in sync with current state
+            self._sync_checkbox_from_state()
+
+            # De-dupe the noisy info log (log at most ~once per 0.75s)
+            import time
+            now = time.monotonic()
+            last = getattr(self, "_last_hf_log_ts", 0.0)
+            if now - last > 0.75:
+                self._last_hf_log_ts = now
+                self.log_info("Updated header, footer, and license label")
 
         except Exception as e:
             self.log_error(f"Failed to update header/footer/license: {e}")
@@ -686,14 +832,258 @@ class SwiftSaleGUI(QMainWindow):
             self.log_error(f"Failed to annotate labels: {e}")
             QMessageBox.critical(self, "Error", f"Failed to annotate labels: {e}")
 
+    # =========================
+    # Shortcuts / Hotkeys
+    # =========================
     def setup_shortcuts(self):
         """Set up keyboard shortcuts."""
         QShortcut(QKeySequence("Ctrl+B"), self, self.add_bidder)
         QShortcut(QKeySequence("Ctrl+C"), self, self.clear_username)
 
+        # Dev dialog
         dev_shortcut = QShortcut(QKeySequence("Ctrl+Alt+D"), self)
         dev_shortcut.activated.connect(self.open_dev_code_dialog)
+
+        # Bridge: enable/disable
+        QShortcut(QKeySequence("Ctrl+Shift+J"), self, self.toggle_bridge_enabled)
+
+        # Bridge: toggle auto/manual
+        QShortcut(QKeySequence("Ctrl+Shift+K"), self, self.toggle_bridge_mode)
+
+        # Miss Queue dialog
+        QShortcut(QKeySequence("Ctrl+Shift+M"), self, self.open_miss_queue_dialog)
+
+        # Sticky winner apply
+        QShortcut(QKeySequence("Ctrl+Shift+W"), self, self.apply_sticky_winner)
+
         self.log_info("Keyboard shortcuts set up")
+
+    # =========================
+    # Bridge status + controls
+    # =========================
+    def refresh_bridge_status(self):
+        """Query Flask bridge for status and update footer text. Fallback to Manual if unreachable."""
+        try:
+            r = requests.get(f"{self._bridge_base()}/bridge/status", timeout=2)
+            if r.ok:
+                data = r.json().get("status") == "success" and r.json() or {}
+                # If wrapped in {'status':'success', ...}, merge properly
+                if data.get("status") == "success":
+                    data = {k: v for k, v in data.items() if k != "status"}
+                self.bridge_enabled = bool(data.get("enabled", self.bridge_enabled))
+                self.bridge_mode = str(data.get("mode", self.bridge_mode or "manual"))
+            else:
+                # Server reachable but not OK -> safe fallback
+                self.bridge_enabled = False
+                self.bridge_mode = "manual"
+        except Exception as e:
+            self.log_error(f"Bridge status failed: {e}")
+            self.bridge_enabled = False
+            self.bridge_mode = "manual"
+        finally:
+            # Persist the last-known UI preference (even if server down, we keep Manual)
+            self.qsettings.setValue("bridge/mode", self.bridge_mode)
+            self.qsettings.setValue("bridge/auto_capture", self.bridge_mode == "auto")
+            self._sync_checkbox_from_state()
+            self.update_header_and_footer()
+
+    def toggle_bridge_enabled(self):
+        """Enable/disable the local browser bridge. Always send {enabled, mode}."""
+        try:
+            new_enabled = not self.bridge_enabled
+            payload = {"enabled": new_enabled, "mode": self.bridge_mode}
+            r = requests.post(f"{self._bridge_base()}/bridge/mode", json=payload, timeout=3)
+            if r.ok and r.json().get("status") == "success":
+                self.bridge_enabled = bool(r.json().get("enabled", new_enabled))
+                self.bridge_mode = str(r.json().get("mode", self.bridge_mode))
+                # Persist mode (enabled is runtime only)
+                self.qsettings.setValue("bridge/mode", self.bridge_mode)
+                self.qsettings.setValue("bridge/auto_capture", self.bridge_mode == "auto")
+                self.show_temporary_message(f"Bridge {'ENABLED' if self.bridge_enabled else 'DISABLED'}")
+            else:
+                QMessageBox.warning(self, "Bridge", "Failed to toggle bridge. Is the server running?")
+        except Exception as e:
+            self.log_error(f"toggle_bridge_enabled failed: {e}")
+            QMessageBox.warning(self, "Bridge", f"Failed to toggle bridge: {e}")
+        finally:
+            self._sync_checkbox_from_state()
+            self.update_header_and_footer()
+
+    def toggle_bridge_mode(self):
+        """Toggle Auto/Manual capture mode on the server. Always send {enabled, mode}."""
+        new_mode = "manual" if self.bridge_mode == "auto" else "auto"
+        try:
+            payload = {"enabled": bool(self.bridge_enabled), "mode": new_mode}
+            r = requests.post(f"{self._bridge_base()}/bridge/mode", json=payload, timeout=3)
+            if r.ok and r.json().get("status") == "success":
+                self.bridge_enabled = bool(r.json().get("enabled", self.bridge_enabled))
+                self.bridge_mode = str(r.json().get("mode", new_mode))
+                self.qsettings.setValue("bridge/mode", self.bridge_mode)
+                self.qsettings.setValue("bridge/auto_capture", self.bridge_mode == "auto")
+                self.show_temporary_message(f"Capture mode: {self.bridge_mode.upper()}")
+            else:
+                QMessageBox.warning(self, "Bridge", "Failed to change capture mode.")
+        except Exception as e:
+            self.log_error(f"toggle_bridge_mode failed: {e}")
+            QMessageBox.warning(self, "Bridge", f"Failed to change capture mode: {e}")
+        finally:
+            self._sync_checkbox_from_state()
+            self.update_header_and_footer()
+
+    # =========================
+    # Socket.IO (winner events)
+    # =========================
+    def connect_socketio(self):
+        """Connect to local Flask-SocketIO and subscribe to events."""
+        try:
+            # The base_url is something like http://127.0.0.1:10000
+            url = self.base_url or "http://127.0.0.1:10000"
+
+            @self.sio.event
+            def connect():
+                self.log_info("Socket.IO connected")
+                self.show_temporary_message("Bridge connected")
+
+            @self.sio.event
+            def disconnect():
+                self.log_info("Socket.IO disconnected")
+
+            @self.sio.on("winner")
+            def on_winner(payload):
+                try:
+                    username = payload.get("username", "")
+                    result = payload.get("result", {}) or {}
+                    action = result.get("action", "received")
+                    conf = payload.get("confidence", 0)
+                    source = payload.get("source", "unknown")
+                    mode = payload.get("mode", self.bridge_mode)
+
+                    msg = f"Winner: {username} • {action} • {source} • conf={conf:.2f} • mode={mode}"
+                    self.statusBar().showMessage(msg, 3000)
+                    self.log_info(msg)
+
+                    # Update footer/bins
+                    self.refresh_bin_usage_display()
+                    self.update_latest_bidder_display()
+                except Exception as e:
+                    self.log_error(f"on_winner handler failed: {e}")
+
+            self.sio.connect(url, transports=["websocket", "polling"])
+        except Exception as e:
+            self.log_error(f"Socket.IO connect failed: {e}")
+            # Non-fatal. UI still works; user can retry by toggling bridge or restarting.
+
+    # =========================
+    # Miss Queue dialog
+    # =========================
+    def open_miss_queue_dialog(self):
+        """Simple dialog to process queued winner events."""
+        try:
+            items = self.bidder_manager.list_miss_queue()
+        except Exception as e:
+            self.log_error(f"list_miss_queue failed: {e}")
+            items = []
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Needs Username — Queue")
+        vbox = QVBoxLayout(dlg)
+
+        info = QLabel("Review items below. Select one and choose Apply or Skip.")
+        vbox.addWidget(info)
+
+        lst = QListWidget()
+        for evt in items:
+            ts = evt.get("ts")
+            ts_str = ""
+            try:
+                ts_dt = datetime.fromtimestamp(int(ts)/1000) if ts else None
+                ts_str = ts_dt.strftime("%H:%M:%S") if ts_dt else ""
+            except Exception:
+                ts_str = ""
+            text = f"{evt.get('username','')}  |  src={evt.get('source','?')}  |  conf={evt.get('confidence',0):.2f}  |  {ts_str}"
+            QListWidgetItem(text, lst)
+        vbox.addWidget(lst)
+
+        hbox = QHBoxLayout()
+        btn_apply = QPushButton("Apply to Bin")
+        btn_skip = QPushButton("Skip")
+        btn_close = QPushButton("Close")
+        hbox.addWidget(btn_apply)
+        hbox.addWidget(btn_skip)
+        hbox.addStretch(1)
+        hbox.addWidget(btn_close)
+        vbox.addLayout(hbox)
+
+        def apply_selected():
+            row = lst.currentRow()
+            if row < 0:
+                QMessageBox.information(dlg, "Queue", "Select an item first.")
+                return
+            try:
+                next_item = self.bidder_manager.pop_next_miss()
+            except Exception as e:
+                self.log_error(f"pop_next_miss failed: {e}")
+                QMessageBox.warning(dlg, "Queue", "Failed to pop next item.")
+                return
+            if not next_item:
+                QMessageBox.information(dlg, "Queue", "Queue is empty.")
+                return
+            # Assign bin to that username
+            try:
+                bin_code = self.bidder_manager.apply_sticky_to_username(next_item.get("username"))
+                if bin_code:
+                    self.show_temporary_message(f"Assigned bin {bin_code} → {next_item.get('username')}")
+                    self.refresh_bin_usage_display()
+                    self.update_latest_bidder_display()
+                    lst.takeItem(row)
+                else:
+                    QMessageBox.warning(dlg, "Queue", "No bin assigned (sticky empty or error).")
+            except Exception as e:
+                self.log_error(f"apply_selected failed: {e}")
+                QMessageBox.critical(dlg, "Queue", f"Failed to assign bin: {e}")
+
+        def skip_selected():
+            row = lst.currentRow()
+            if row < 0:
+                QMessageBox.information(dlg, "Queue", "Select an item first.")
+                return
+            # Pop and discard
+            try:
+                _ = self.bidder_manager.pop_next_miss()
+                lst.takeItem(row)
+            except Exception as e:
+                self.log_error(f"skip_selected failed: {e}")
+
+        btn_apply.clicked.connect(apply_selected)
+        btn_skip.clicked.connect(skip_selected)
+        btn_close.clicked.connect(dlg.accept)
+
+        dlg.resize(520, 360)
+        dlg.exec()
+
+    # =========================
+    # Sticky winner hotkey
+    # =========================
+    def apply_sticky_winner(self):
+        """Apply the last sticky winner to a bin immediately."""
+        try:
+            bin_code = self.bidder_manager.apply_sticky_to_username()
+            if bin_code:
+                self.show_temporary_message(f"Applied sticky → Bin {bin_code}")
+                self.refresh_bin_usage_display()
+                self.update_latest_bidder_display()
+            else:
+                self.show_temporary_message("No sticky winner available")
+        except Exception as e:
+            self.log_error(f"apply_sticky_winner failed: {e}")
+            QMessageBox.warning(self, "Sticky", f"Failed to apply sticky: {e}")
+
+    # =========================
+    # Existing UI / features
+    # =========================
+    def setup_shortcuts_legacy(self):
+        """(kept for compatibility if referenced elsewhere)"""
+        self.setup_shortcuts()
 
     def save_user_config(self):
         """Save current user settings to database."""
@@ -707,7 +1097,10 @@ class SwiftSaleGUI(QMainWindow):
         except Exception as e:
             self.log_error(f"Failed to save user config: {e}")
 
+    # ==== Existing main entry ====
+    # (unchanged)
 if __name__ == "__main__":
+    import sys
     from main_qt import main
     app = QApplication(sys.argv)
     try:

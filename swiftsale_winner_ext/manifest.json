@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "SwiftSale Whatnot Winner Capturer",
+  "version": "1.0.0",
+  "description": "Captures winning buyer usernames on Whatnot and posts them to SwiftSale's local /won bridge.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.whatnot.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.whatnot.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

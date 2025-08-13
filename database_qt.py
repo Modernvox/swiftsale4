@@ -1,363 +1,411 @@
+# -*- coding: utf-8 -*-
 import os
+import json
 import sqlite3
 import logging
 import shutil
 from datetime import datetime
-from config import load_config, DEFAULT_DATA_DIR
+from typing import Optional, Dict, Any
+
+from config_qt import load_config, DEFAULT_DATA_DIR
+
+logger = logging.getLogger(__name__)
+
 
 class DatabaseManager:
-    def __init__(self, db_path=None):
-        config = load_config()
-        env = os.getenv("ENV", "development")
+    """
+    Local settings/subscription/install manager (SQLite only).
 
-        if env == "production" and "DATABASE_URL" in os.environ:
-            # Use PostgreSQL for Render.com
-            try:
-                self.conn = psycopg2.connect(os.environ["DATABASE_URL"], cursor_factory=DictCursor)
-                self.db_path = None
-                logging.info("Connected to PostgreSQL database via DATABASE_URL")
-            except psycopg2.Error as e:
-                logging.error(f"Database connection failed: {e}")
-                raise
-        else:
-            # Fallback to SQLite for development
-            if db_path is None:
-                user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
-                os.makedirs(user_data_dir, exist_ok=True)
-                db_path = os.path.join(user_data_dir, 'subscriptions_qt.db')
+    Why SQLite only?
+      - The desktop app should NOT ship live DB credentials or talk directly to Postgres.
+      - Cloud sync should flow through your API / CloudDatabaseManager.
+    """
 
+    def __init__(self, db_path: Optional[str] = None):
+        config = load_config() or {}
+        try:
+            if not db_path:
+                os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
+                db_path = os.path.join(DEFAULT_DATA_DIR, "subscriptions_qt.db")
+
+            # Bootstrap from bundled template if needed
             if not os.path.exists(db_path):
-                install_dir = os.path.dirname(os.path.abspath(__file__))
-                src_db = os.path.join(install_dir, 'subscriptions.db')
-                if os.path.exists(src_db):
-                    shutil.copy(src_db, db_path)
-                    logging.info(f"Copied database from {src_db} to {db_path}")
-                else:
-                    logging.info(f"Source database not found at {src_db}, creating new database")
+                try:
+                    install_dir = os.path.dirname(os.path.abspath(__file__))
+                    src_db = os.path.join(install_dir, "subscriptions.db")
+                    if os.path.exists(src_db):
+                        shutil.copy(src_db, db_path)
+                        logger.info("Copied bundled DB %s -> %s", src_db, db_path)
+                except Exception as e:
+                    logger.warning("No bundled DB copy performed: %s", e)
 
-            try:
-                self.conn = sqlite3.connect(db_path, check_same_thread=False)
-                self.db_path = db_path
-                logging.info(f"Connected to SQLite database: {db_path}")
-                self._initialize_database()
-                self._migrate_database()
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn.execute("PRAGMA foreign_keys = ON;")
+            self.conn.execute("PRAGMA journal_mode = WAL;")
+            self.db_path = db_path
+            logger.info("Connected to SQLite database: %s", db_path)
 
-            except sqlite3.Error as e:
-                logging.error(f"Database connection failed for {db_path}: {e}")
-                raise
+            self._initialize_database()
+            self._migrate_database()
+        except sqlite3.Error as e:
+            logger.error("Database connection/init failed for %s: %s", db_path, e, exc_info=True)
+            raise
 
-    def _initialize_database(self):
-        cursor = self.conn.cursor()
-        # Existing tables
-        cursor.execute("""
+    # -------------------------------------------------------------------------
+    # Schema
+    # -------------------------------------------------------------------------
+    def _initialize_database(self) -> None:
+        cur = self.conn.cursor()
+
+        # subscriptions
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS subscriptions (
                 email TEXT PRIMARY KEY,
                 tier TEXT NOT NULL,
-                license_key TEXT
+                license_key TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        cursor.execute("""
+            """
+        )
+
+        # user settings
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS settings (
                 email TEXT PRIMARY KEY,
                 chat_id TEXT,
                 top_buyer_text TEXT,
                 giveaway_announcement_text TEXT,
                 flash_sale_announcement_text TEXT,
-                multi_buyer_mode BOOLEAN
+                multi_buyer_mode INTEGER
             )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bin_assignments (
-                username TEXT PRIMARY KEY,
-                bin_number INTEGER NOT NULL
-            )
-        """)
-        cursor.execute("""
+            """
+        )
+
+        # app settings (key/value)
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
-        """)
-        cursor.execute("""
+            """
+        )
+
+        # promo codes (local cache / offline)
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS promo_codes (
                 code TEXT PRIMARY KEY,
                 expires_at TEXT,
                 tier TEXT,
                 hours_valid INTEGER
             )
-        """)
-        # New installs table
-        cursor.execute("""
+            """
+        )
+
+        # installs (hashed email -> install id/tier)
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS installs (
                 hashed_email TEXT PRIMARY KEY,
                 install_id TEXT UNIQUE NOT NULL,
                 tier TEXT NOT NULL DEFAULT 'free'
             )
-        """)
+            """
+        )
+
+        # kept for legacy helpers; not authoritative for bins (bidders.db owns that)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bin_assignments (
+                username TEXT PRIMARY KEY,
+                bin_number INTEGER NOT NULL
+            )
+            """
+        )
+
         self.conn.commit()
-        logging.info("Database tables initialized successfully")
+        logger.info("Database tables initialized successfully")
 
-    def _migrate_database(self):
-        cursor = self.conn.cursor()
-        # Existing migration for settings table
-        cursor.execute("PRAGMA table_info(settings)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if "multi_buyer_mode" not in columns:
-            logging.info("Migrating settings table to add multi_buyer_mode column")
-            cursor.execute("""
-                CREATE TABLE settings_new (
-                    email TEXT PRIMARY KEY,
-                    chat_id TEXT,
-                    top_buyer_text TEXT,
-                    giveaway_announcement_text TEXT,
-                    flash_sale_announcement_text TEXT,
-                    multi_buyer_mode BOOLEAN
+    def _migrate_database(self) -> None:
+        """Lightweight migrations to keep older DBs compatible."""
+        cur = self.conn.cursor()
+
+        # Ensure settings table has multi_buyer_mode column
+        try:
+            cur.execute("PRAGMA table_info(settings)")
+            cols = [c[1] for c in cur.fetchall()]
+            if "multi_buyer_mode" not in cols:
+                logger.info("Migrating: adding settings.multi_buyer_mode")
+                cur.execute("ALTER TABLE settings ADD COLUMN multi_buyer_mode INTEGER")
+                self.conn.commit()
+        except sqlite3.Error as e:
+            logger.warning("Settings migration (multi_buyer_mode) skipped: %s", e)
+
+        # Ensure installs table exists (older builds may lack it)
+        try:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='installs'")
+            if not cur.fetchone():
+                logger.info("Migrating: creating installs table")
+                cur.execute(
+                    """
+                    CREATE TABLE installs (
+                        hashed_email TEXT PRIMARY KEY,
+                        install_id TEXT UNIQUE NOT NULL,
+                        tier TEXT NOT NULL DEFAULT 'free'
+                    )
+                    """
                 )
-            """)
-            cursor.execute("""
-                INSERT INTO settings_new (email, chat_id, top_buyer_text, giveaway_announcement_text, flash_sale_announcement_text)
-                SELECT email, chat_id, top_buyer_text, giveaway_announcement_text, flash_sale_announcement_text
-                FROM settings
-            """)
-            cursor.execute("DROP TABLE settings")
-            cursor.execute("ALTER TABLE settings_new RENAME TO settings")
-            self.conn.commit()
-            logging.info("Migration completed: added multi_buyer_mode column")
+                self.conn.commit()
+        except sqlite3.Error as e:
+            logger.warning("Installs migration skipped: %s", e)
 
-        # Check if installs table exists (for backward compatibility)
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='installs'")
-        if not cursor.fetchone():
-            logging.info("Creating installs table during migration")
-            cursor.execute("""
-                CREATE TABLE installs (
-                    hashed_email TEXT PRIMARY KEY,
-                    install_id TEXT UNIQUE NOT NULL,
-                    tier TEXT NOT NULL DEFAULT 'free'
-                )
-            """)
-            self.conn.commit()
-            logging.info("Migration completed: created installs table")
-
-    def save_subscription(self, email, tier, license_key):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO subscriptions (email, tier, license_key, updated_at) VALUES (?, ?, ?, ?)",
-            (email, tier, license_key, datetime.utcnow().isoformat())
+    # -------------------------------------------------------------------------
+    # Subscriptions
+    # -------------------------------------------------------------------------
+    def save_subscription(self, email: str, tier: str, license_key: Optional[str]) -> None:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO subscriptions (email, tier, license_key, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (email, tier, license_key, datetime.utcnow().isoformat(timespec="seconds")),
         )
         self.conn.commit()
-        logging.info(f"Saved subscription for {email}: tier={tier}, license_key={license_key}")
+        logger.info("Saved subscription for %s: tier=%s", email, tier)
 
-    def get_subscription(self, email):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT email, tier, license_key FROM subscriptions WHERE email = ?", (email,)
-        )
-        result = cursor.fetchone()
-        if result:
-            return {"email": result[0], "tier": result[1], "license_key": result[2]}
+    def get_subscription(self, email: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT email, tier, license_key FROM subscriptions WHERE email = ?", (email,))
+        row = cur.fetchone()
+        if row:
+            return {"email": row[0], "tier": row[1], "license_key": row[2]}
         return None
 
-    def get_settings(self, email):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT email, chat_id, top_buyer_text, giveaway_announcement_text, flash_sale_announcement_text, multi_buyer_mode FROM settings WHERE email = ?",
-            (email,)
-        )
-        result = cursor.fetchone()
-        if result:
-            return {
-                "email": result[0],
-                "chat_id": result[1],
-                "top_buyer_text": result[2],
-                "giveaway_announcement_text": result[3],
-                "flash_sale_announcement_text": result[4],
-                "multi_buyer_mode": bool(result[5])
-            }
-        return None
+    def update_subscription(self, email: str, tier: str, license_key: Optional[str]) -> None:
+        # upsert
+        self.save_subscription(email, tier, license_key)
 
-    def save_settings(self, email, chat_id, top_buyer_text, giveaway_announcement_text, flash_sale_announcement_text, multi_buyer_mode):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO settings (
-                email, chat_id, top_buyer_text, giveaway_announcement_text, flash_sale_announcement_text, multi_buyer_mode
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """, (email, chat_id, top_buyer_text, giveaway_announcement_text, flash_sale_announcement_text, int(multi_buyer_mode)))
-        self.conn.commit()
-        logging.info(f"Saved settings for {email}")
-
-    def update_subscription(self, email, tier, license_key):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT email FROM subscriptions WHERE email = ?", (email,)
-        )
-        if cursor.fetchone():
-            cursor.execute(
-                "UPDATE subscriptions SET tier = ?, license_key = ? WHERE email = ?", (tier, license_key, email)
-            )
-        else:
-            cursor.execute(
-                "INSERT OR REPLACE INTO subscriptions (email, tier, license_key, updated_at) VALUES (?, ?, ?, ?)",
-                (email, tier, license_key, datetime.utcnow().isoformat())
-            )
-        self.conn.commit()
-        logging.info(f"Updated subscription for {email}: tier={tier}, license_key={license_key}")
-
-    def load_subscription(self, email):
+    def load_subscription(self, email: str):
         sub = self.get_subscription(email)
         return (sub["email"], sub["tier"], sub["license_key"]) if sub else (None, None, None)
 
-    def load_subscription_by_id(self, license_key):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT email, tier, license_key FROM subscriptions WHERE license_key = ?",
-            (license_key,)
+    def load_subscription_by_id(self, license_key: str):
+        cur = self.conn.cursor()
+        cur.execute("SELECT email, tier, license_key FROM subscriptions WHERE license_key = ?", (license_key,))
+        row = cur.fetchone()
+        return (row[0], row[1], row[2]) if row else (None, None, None)
+
+    # -------------------------------------------------------------------------
+    # User settings (per email)
+    # -------------------------------------------------------------------------
+    def get_settings(self, email: str) -> Optional[Dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT email, chat_id, top_buyer_text, giveaway_announcement_text,
+                   flash_sale_announcement_text, multi_buyer_mode
+            FROM settings WHERE email = ?
+            """,
+            (email,),
         )
-        result = cursor.fetchone()
-        return (result[0], result[1], result[2]) if result else (None, None, None)
+        row = cur.fetchone()
+        if row:
+            return {
+                "email": row[0],
+                "chat_id": row[1] or "",
+                "top_buyer_text": row[2] or "",
+                "giveaway_announcement_text": row[3] or "",
+                "flash_sale_announcement_text": row[4] or "",
+                "multi_buyer_mode": bool(row[5]),
+            }
+        return None
 
-    def count_user_bins(self, user_email: str) -> int:
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM bin_assignments WHERE username = ?",
-                (user_email,)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else 0
-        except sqlite3.Error as e:
-            logging.error(f"Failed to count bins for {user_email}: {e}", exc_info=True)
-            return 0
+    def save_settings(
+        self,
+        email: str,
+        chat_id: str,
+        top_buyer_text: str,
+        giveaway_announcement_text: str,
+        flash_sale_announcement_text: str,
+        multi_buyer_mode: bool,
+    ) -> None:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO settings (
+                email, chat_id, top_buyer_text, giveaway_announcement_text,
+                flash_sale_announcement_text, multi_buyer_mode
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                email,
+                chat_id,
+                top_buyer_text,
+                giveaway_announcement_text,
+                flash_sale_announcement_text,
+                int(bool(multi_buyer_mode)),
+            ),
+        )
+        self.conn.commit()
+        logger.info("Saved settings for %s", email)
 
-    def get_setting(self, key):
+    # -------------------------------------------------------------------------
+    # App-level settings (key/value)
+    # -------------------------------------------------------------------------
+    def get_setting(self, key: str) -> Optional[str]:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
-            row = cursor.fetchone()
+            cur = self.conn.cursor()
+            cur.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+            row = cur.fetchone()
             return row[0] if row else None
         except sqlite3.Error as e:
-            logging.error(f"Error retrieving setting for key {key}: {e}")
+            logger.error("Error retrieving app setting '%s': %s", key, e)
             return None
 
-    def save_setting(self, key, value):
+    def save_setting(self, key: str, value: str) -> None:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS app_settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
-            cursor.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", (key, value))
+            cur = self.conn.cursor()
+            cur.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
             self.conn.commit()
-            logging.info(f"Saved setting: {key} = {value}")
+            logger.info("Saved app setting: %s", key)
         except sqlite3.Error as e:
-            logging.error(f"Error saving setting {key}: {e}")
+            logger.error("Error saving app setting '%s': %s", key, e, exc_info=True)
 
-    def is_promo_code_valid(self, code):
+    # -------------------------------------------------------------------------
+    # Promo codes (local cache)
+    # -------------------------------------------------------------------------
+    def is_promo_code_valid(self, code: str) -> Optional[Dict[str, Any]]:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS promo_codes (
-                    code TEXT PRIMARY KEY,
-                    expires_at TEXT,
-                    tier TEXT,
-                    hours_valid INTEGER
-                )
-            """)
-            cursor.execute("SELECT expires_at, tier, hours_valid FROM promo_codes WHERE code = ?", (code,))
-            row = cursor.fetchone()
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT expires_at, tier, hours_valid FROM promo_codes WHERE code = ?",
+                (code,),
+            )
+            row = cur.fetchone()
             if not row:
                 return None
             expires_at, tier, hours_valid = row
-            if datetime.utcnow() > datetime.fromisoformat(expires_at):
+            try:
+                if datetime.utcnow() > datetime.fromisoformat(expires_at):
+                    return None
+            except Exception:
+                # If expires_at invalid, consider it invalid
                 return None
             return {"tier": tier, "hours_valid": hours_valid}
         except Exception as e:
-            logging.error(f"Error validating promo code: {e}", exc_info=True)
+            logger.error("Error validating promo code '%s': %s", code, e, exc_info=True)
             return None
 
-    def save_promo_code(self, code, tier, hours_valid, expires_at):
+    def save_promo_code(self, code: str, tier: str, hours_valid: int, expires_at: datetime) -> None:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS promo_codes (
-                    code TEXT PRIMARY KEY,
-                    expires_at TEXT,
-                    tier TEXT,
-                    hours_valid INTEGER
-                )
-            """)
-            cursor.execute("""
+            cur = self.conn.cursor()
+            cur.execute(
+                """
                 INSERT OR REPLACE INTO promo_codes (code, expires_at, tier, hours_valid)
                 VALUES (?, ?, ?, ?)
-            """, (code, expires_at.isoformat(), tier, hours_valid))
+                """,
+                (code, expires_at.isoformat(timespec="seconds"), tier, hours_valid),
+            )
             self.conn.commit()
-            logging.info(f"Saved promo code: {code}")
+            logger.info("Saved promo code: %s", code)
         except Exception as e:
-            logging.error(f"Error saving promo code {code}: {e}")
+            logger.error("Error saving promo code '%s': %s", code, e, exc_info=True)
 
-    def get_install_by_hashed_email(self, hashed_email):
-        """Fetch install record by hashed email."""
+    # -------------------------------------------------------------------------
+    # Installs
+    # -------------------------------------------------------------------------
+    def get_install_by_hashed_email(self, hashed_email: str) -> Optional[Dict[str, Any]]:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(
+            cur = self.conn.cursor()
+            cur.execute(
                 "SELECT install_id, tier FROM installs WHERE hashed_email = ?",
-                (hashed_email,)
+                (hashed_email,),
             )
-            result = cursor.fetchone()
-            if result:
-                return {"install_id": result[0], "tier": result[1]}
+            row = cur.fetchone()
+            if row:
+                return {"install_id": row[0], "tier": row[1]}
             return None
         except sqlite3.Error as e:
-            logging.error(f"Error fetching install for hashed email {hashed_email}: {e}", exc_info=True)
+            logger.error("Error fetching install for hashed email %s: %s", hashed_email, e, exc_info=True)
             return None
 
-    def get_last_install(self):
-        """Fetch the last install record by install_id."""
+    def get_last_install(self) -> Optional[Dict[str, Any]]:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1"
-            )
-            result = cursor.fetchone()
-            return {"install_id": result[0]} if result else None
+            cur = self.conn.cursor()
+            cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
+            row = cur.fetchone()
+            return {"install_id": row[0]} if row else None
         except sqlite3.Error as e:
-            logging.error(f"Error fetching last install: {e}", exc_info=True)
+            logger.error("Error fetching last install: %s", e, exc_info=True)
             return None
 
-    def save_install(self, install_data):
-        """Save a new install record."""
+    def save_install(self, install_data: Dict[str, Any]) -> None:
+        """
+        install_data requires:
+          - hashed_email: str
+          - install_id: str
+          - tier: str
+        """
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(
+            cur = self.conn.cursor()
+            cur.execute(
                 """
                 INSERT INTO installs (hashed_email, install_id, tier)
                 VALUES (?, ?, ?)
                 """,
-                (install_data['hashed_email'], install_data['install_id'], install_data['tier'])
+                (install_data["hashed_email"], install_data["install_id"], install_data["tier"]),
             )
             self.conn.commit()
-            logging.info(f"Saved install: hashed_email={install_data['hashed_email']}, install_id={install_data['install_id']}, tier={install_data['tier']}")
+            logger.info(
+                "Saved install: hashed_email=%s, install_id=%s, tier=%s",
+                install_data["hashed_email"], install_data["install_id"], install_data["tier"]
+            )
+        except sqlite3.IntegrityError as e:
+            # If record exists, convert to update for idempotency
+            logger.info("Install already exists, updating tier: %s", e)
+            self.update_install_tier(install_data["hashed_email"], install_data["tier"])
         except sqlite3.Error as e:
-            logging.error(f"Error saving install: {e}", exc_info=True)
+            logger.error("Error saving install: %s", e, exc_info=True)
             raise
 
-    def update_install_tier(self, hashed_email, tier):
-        """Update tier for an install record."""
+    def update_install_tier(self, hashed_email: str, tier: str) -> None:
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(
+            cur = self.conn.cursor()
+            cur.execute(
                 "UPDATE installs SET tier = ? WHERE hashed_email = ?",
-                (tier, hashed_email)
+                (tier, hashed_email),
             )
             self.conn.commit()
-            logging.info(f"Updated install tier to {tier} for hashed email {hashed_email}")
+            logger.info("Updated install tier to %s for %s", tier, hashed_email)
         except sqlite3.Error as e:
-            logging.error(f"Error updating install tier for hashed email {hashed_email}: {e}", exc_info=True)
+            logger.error("Error updating install tier for %s: %s", hashed_email, e, exc_info=True)
             raise
 
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            logging.info("Database connection closed")
+    # -------------------------------------------------------------------------
+    # Legacy helper (rarely used)
+    # -------------------------------------------------------------------------
+    def count_user_bins(self, user_email: str) -> int:
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM bin_assignments WHERE username = ?", (user_email,))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.Error as e:
+            logger.error("Failed to count bins for %s: %s", user_email, e, exc_info=True)
+            return 0
+
+    # -------------------------------------------------------------------------
+    def close(self) -> None:
+        try:
+            if getattr(self, "conn", None):
+                self.conn.close()
+                logger.info("Database connection closed")
+        except Exception as e:
+            logger.error("Error closing database: %s", e)

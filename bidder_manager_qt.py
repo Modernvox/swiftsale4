@@ -4,18 +4,35 @@ import os
 import csv
 import shutil
 import sys
+import threading
+from dataclasses import dataclass, asdict
+from typing import Optional, Dict, List, Tuple
+from collections import deque
 from datetime import datetime
 from config_qt import DEFAULT_DATA_DIR
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class WinnerEvent:
+    username: str
+    lot_id: Optional[str]
+    source: str
+    confidence: float
+    ts: int
+    processed: int = 0      # 0 = queued/unprocessed, 1 = handled
+    error: Optional[str] = None
+
+
 class BidderManager:
     """
-    Manages bidder transactions, bin assignments, and install data for SwiftSale,
-    using bidders.db for transactions and subscriptions.db for subscriptions and installs.
+    Manages bidder transactions, bin assignments, and install/subscription data for SwiftSale.
+    Adds winner-ingestion (from browser bridge), a Miss Queue, sticky winner tracking,
+    and lightweight telemetry in bidders.db:winner_capture.
     """
-    SCHEMA_VERSION = "1.0"
+    SCHEMA_VERSION = "1.1"  # bumped to run column/table migrations
 
     def __init__(self, bidders_db_path, subs_db_path, log_info=None, log_error=None):
         if not bidders_db_path or not subs_db_path:
@@ -43,6 +60,8 @@ class BidderManager:
 
         try:
             self.conn = sqlite3.connect(self.bidders_db_path, check_same_thread=False)
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA foreign_keys = ON;")
             logger.info("Connected to bidders.db successfully")
             self._verify_schema(self.conn, "bidders.db")
         except sqlite3.Error as e:
@@ -50,6 +69,7 @@ class BidderManager:
             raise
 
         self._initialize_bidders_tables()
+        self._migrate_bidders_schema()  # add columns/tables if missing
 
         # ─── subscriptions.db ─────────────────────────────────────────────────────
         self.subs_db_path = subs_db_path
@@ -70,6 +90,7 @@ class BidderManager:
 
         try:
             self.sub_conn = sqlite3.connect(self.subs_db_path, check_same_thread=False)
+            self.sub_conn.execute("PRAGMA journal_mode=WAL;")
             self.sub_conn.execute("PRAGMA foreign_keys = ON;")
             logger.info("Connected to subscriptions.db successfully")
             self._verify_schema(self.sub_conn, "subscriptions.db")
@@ -83,8 +104,16 @@ class BidderManager:
         self.bin_counter = 0
         self.giveaway_counter = 0
         self.show_start_time = None
-        self.bidders = {}  # For in-memory transactions
+        self.bidders: Dict[str, Dict] = {}  # For in-memory transactions
 
+        # Winner ingestion state
+        self._miss_queue: deque[WinnerEvent] = deque(maxlen=200)
+        self._sticky_username: Optional[str] = None
+        self._lock = threading.Lock()
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Schema helpers
+    # ─────────────────────────────────────────────────────────────────────────────
     def _verify_schema(self, conn, db_name):
         """Verify the database schema version, recreate if outdated."""
         try:
@@ -93,10 +122,10 @@ class BidderManager:
             cursor.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row and row[0] != self.SCHEMA_VERSION:
-                logger.warning(f"Outdated schema in {db_name}, recreating tables")
+                logger.warning(f"Outdated schema in {db_name}, recreating tables where needed")
                 if db_name == "bidders.db":
-                    cursor.execute("DROP TABLE IF EXISTS bidders")
-                    cursor.execute("DROP TABLE IF EXISTS bin_assignments")
+                    # Keep data tables but we will migrate below; only reset version
+                    pass
                 else:
                     cursor.execute("DROP TABLE IF EXISTS subscriptions")
                     cursor.execute("DROP TABLE IF EXISTS settings")
@@ -119,6 +148,7 @@ class BidderManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bidders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    -- email column may be added by migration if missing
                     username TEXT NOT NULL,
                     original_username TEXT NOT NULL,
                     quantity INTEGER NOT NULL,
@@ -140,12 +170,56 @@ class BidderManager:
                 CREATE INDEX IF NOT EXISTS idx_bin_assignments_username 
                 ON bin_assignments (username)
             """)
+            # winner_capture (telemetry / reconciliation)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS winner_capture (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    lot_id TEXT,
+                    source TEXT,
+                    confidence REAL DEFAULT 0,
+                    ts INTEGER,
+                    processed INTEGER DEFAULT 0,
+                    error TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_winner_capture_ts
+                ON winner_capture (ts)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_winner_capture_username
+                ON winner_capture (username)
+            """)
             self.conn.commit()
             logger.info("Ensured bidders.db tables exist")
         except sqlite3.Error as e:
             logger.error("Failed to initialize bidders tables: %s", e)
             self.conn.rollback()
             raise
+
+    def _migrate_bidders_schema(self):
+        """Add missing columns / fix mismatches without dropping data."""
+        try:
+            cursor = self.conn.cursor()
+
+            # Add email column to bidders if missing (your inserts use it)
+            if not self._column_exists(cursor, "bidders", "email"):
+                cursor.execute("ALTER TABLE bidders ADD COLUMN email TEXT")
+                self.conn.commit()
+                logger.info("Migrated bidders: added email TEXT column")
+
+            # Nothing else required now; future-safe hook.
+        except sqlite3.Error as e:
+            logger.error("Schema migration failed: %s", e)
+            self.conn.rollback()
+            raise
+
+    @staticmethod
+    def _column_exists(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+        cursor.execute(f"PRAGMA table_info({table})")
+        cols = [r[1].lower() for r in cursor.fetchall()]
+        return column.lower() in cols
 
     def _initialize_subscription_tables(self):
         """Create or verify tables in subscriptions.db: subscriptions, settings, installs."""
@@ -154,7 +228,7 @@ class BidderManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     email TEXT PRIMARY KEY,
-                    tier TEXT NOT NULL,
+                    tier  TEXT NOT NULL,
                     license_key TEXT
                 )
             """)
@@ -171,17 +245,21 @@ class BidderManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS installs (
                     hashed_email TEXT PRIMARY KEY,
-                    install_id TEXT NOT NULL,
-                    tier TEXT NOT NULL DEFAULT 'Trial'
+                    install_id   TEXT NOT NULL,
+                    tier         TEXT NOT NULL DEFAULT 'Trial'
                 )
             """)
             self.sub_conn.commit()
-            logger.info("Ensured subscriptions, settings, and installs tables exist")
+            self.log_info("Ensured subscriptions, settings, and installs tables exist")
         except sqlite3.Error as e:
-            logger.error("Failed to initialize subscriptions/settings/installs tables: %s", e)
+            self.log_error(f"Failed to initialize subscriptions/settings/installs tables: {e}")
             self.sub_conn.rollback()
             raise
 
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Public APIs used elsewhere in the app (existing)
+    # ─────────────────────────────────────────────────────────────────────────────
     def update_install(self, hashed_email, install_id, tier):
         """Update or insert an install record in subscriptions.db."""
         try:
@@ -215,32 +293,55 @@ class BidderManager:
             logger.error(f"Failed to fetch install for hashed_email={hashed_email}: {e}")
             raise
 
-    def assign_bin(self, username):
-        """Assign a bin to username in bidders.db."""
+    def assign_bin(self, username) -> int:
+        """Return existing bin for username, or assign the next available bin."""
         if not username or not isinstance(username, str):
             raise ValueError("Username must be a non-empty string")
-
         try:
             cursor = self.conn.cursor()
-            uname = username.strip().lower()
+            uname = self._normalize_username(username)
+
+            # 1) If already assigned, return it
             cursor.execute("SELECT bin_number FROM bin_assignments WHERE username = ?", (uname,))
-            bin_result = cursor.fetchone()
-            if bin_result:
-                bin_num = bin_result[0]
-            else:
-                self.bin_counter += 1
-                bin_num = self.bin_counter
-                cursor.execute("""
-                    INSERT INTO bin_assignments (username, bin_number)
-                    VALUES (?, ?)
-                """, (uname, bin_num))
-                self.conn.commit()
+            row = cursor.fetchone()
+            if row:
+                bin_num = row[0]
+                logger.info("Re-used bin %d for username %s", bin_num, uname)
+                return bin_num
+
+            # 2) Compute next bin from DB (robust across restarts)
+            cursor.execute("SELECT COALESCE(MAX(bin_number), 0) FROM bin_assignments")
+            max_bin = cursor.fetchone()[0] or 0
+            bin_num = max_bin + 1
+
+            # 3) Insert mapping
+            cursor.execute(
+                "INSERT INTO bin_assignments (username, bin_number) VALUES (?, ?)",
+                (uname, bin_num)
+            )
+            self.conn.commit()
+
             logger.info("Assigned bin %d to username %s", bin_num, uname)
             return bin_num
+
         except sqlite3.Error as e:
             logger.error("Failed to assign bin for %s: %s", username, e)
             self.conn.rollback()
             raise
+
+    def get_bin_for_username(self, username) -> Optional[int]:
+        """Return bin number for a username if assigned."""
+        if not username:
+            return None
+        try:
+            cursor = self.conn.cursor()
+            uname = self._normalize_username(username)
+            cursor.execute("SELECT bin_number FROM bin_assignments WHERE username = ?", (uname,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except sqlite3.Error as e:
+            logger.error("Failed to get bin for %s: %s", username, e)
+            return None
 
     def count_total_bins_assigned(self) -> int:
         """Count distinct usernames that have a bin assigned."""
@@ -255,7 +356,7 @@ class BidderManager:
             return 0
 
     def count_bins_by_email(self, user_email):
-        """Count bins assigned to a user based on their email."""
+        """Count bins assigned to a user based on their email (legacy helper)."""
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
@@ -292,9 +393,9 @@ class BidderManager:
         try:
             bin_num = None
             giveaway_num = None
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
             last_assigned = timestamp
-            uname = username.strip().lower()
+            uname = self._normalize_username(username)
 
             if is_giveaway:
                 self.giveaway_counter += 1
@@ -336,7 +437,6 @@ class BidderManager:
             logger.error("Failed to add transaction for %s: %s", original_username, e)
             raise
 
-
     def add_bidder(self, username, original_username=None, qty=1, weight=None, is_giveaway=False):
         """Wrapper for add_transaction."""
         if not original_username:
@@ -369,7 +469,7 @@ class BidderManager:
             'bin_number', 'giveaway_number', 'timestamp', 'last_assigned'
         ]
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
             file_path = os.path.join(os.path.dirname(self.bidders_db_path), f"bidders_export_{timestamp}.csv")
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             cursor = self.conn.cursor()
@@ -423,7 +523,7 @@ class BidderManager:
                 self.giveaway_counter = 0
                 for row_num, row in enumerate(reader, start=2):
                     try:
-                        uname = row[field_mapping['username']].strip().lower()
+                        uname = self._normalize_username(row[field_mapping['username']])
                         if not uname:
                             logger.warning("Skipping row %d: Missing username", row_num)
                             continue
@@ -449,7 +549,7 @@ class BidderManager:
                             giveaway_num = int(row['giveaway_number']) if row.get('giveaway_number') else None
                         except ValueError:
                             giveaway_num = None
-                        timestamp = row.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                        timestamp = row.get('timestamp') or datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
                         last_assigned = row.get('last_assigned', timestamp)
                         if bin_num:
                             cursor.execute("""
@@ -472,7 +572,7 @@ class BidderManager:
                         self.bidders[uname]["transactions"].append({
                             "qty": qty,
                             "weight": weight,
-                            "giveaway": bool(is_giveaway),
+                            "giveaway": bool(giveaway_num),
                             "giveaway_num": giveaway_num,
                             "timestamp": timestamp,
                             "last_assigned": last_assigned
@@ -572,6 +672,7 @@ class BidderManager:
                 ORDER BY total_quantity DESC
                 LIMIT 5
             """)
+        # noqa E701
             top_buyers = cursor.fetchall()
             logger.debug("Retrieved top buyers: %s", top_buyers)
             return top_buyers
@@ -592,7 +693,7 @@ class BidderManager:
             self.bidders.clear()
             for trans in transactions:
                 orig_uname, qty, bin_num, giveaway_num, weight, timestamp, last_assigned = trans
-                uname = orig_uname.lower()
+                uname = self._normalize_username(orig_uname)
                 if uname not in self.bidders:
                     self.bidders[uname] = {
                         "original_username": orig_uname,
@@ -668,8 +769,8 @@ class BidderManager:
                     (new_tier, user_email)
                 )
         except Exception as e:
-           self.log_error(f"Failed to update tier for {user_email}: {e}")
-                                    
+            self.log_error(f"Failed to update tier for {user_email}: {e}")
+
     def save_settings(self, email, chat_id, top_buyer_text, giveaway_text, flash_sale_text, multi_buyer_mode):
         """Save user settings to subscriptions.db."""
         try:
@@ -722,3 +823,145 @@ class BidderManager:
         except sqlite3.Error as e:
             logger.error("Error closing databases: %s", e)
             raise
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # NEW: Winner ingestion, Miss Queue, Sticky Winner
+    # ─────────────────────────────────────────────────────────────────────────────
+    def record_winner(
+        self,
+        username: str,
+        lot_id: Optional[str],
+        source: str,
+        confidence: float,
+        ts: int,
+        force_queue: bool = False
+    ) -> Dict:
+        """
+        Entry point called by the Flask bridge.
+        - Persists a row in winner_capture.
+        - If high-confidence and not forced, auto-assigns a bin.
+        - Otherwise queues for manual confirm.
+        Returns a small result dict for UI.
+        """
+        uname = self._normalize_username(username)
+        evt = WinnerEvent(username=uname, lot_id=lot_id, source=source, confidence=float(confidence or 0.0), ts=int(ts))
+        action = "queued"
+        bin_code: Optional[int] = None
+        error: Optional[str] = None
+
+        try:
+            # Persist telemetry first
+            self._insert_winner_capture(evt)
+
+            # Sticky winner = last known good
+            with self._lock:
+                self._sticky_username = uname
+
+            if not force_queue and evt.confidence >= 0.8:
+                try:
+                    bin_code = self.assign_bin(uname)
+                    action = "auto_assigned"
+                    evt.processed = 1
+                except Exception as assign_ex:
+                    error = f"assign_failed: {assign_ex}"
+                    self.log_error(error)
+                    # Fall back to queue if assignment fails
+                    self._enqueue(evt)
+                    self._update_winner_capture_processed(evt, processed=0, error=error)
+                    return {"action": "queued", "lot_id": lot_id, "error": "assign_failed"}
+                # mark processed OK
+                self._update_winner_capture_processed(evt, processed=1, error=None)
+            else:
+                # Manual mode or low confidence
+                self._enqueue(evt)
+                self._update_winner_capture_processed(evt, processed=0, error=None)
+
+            return {"action": action, "bin": bin_code, "lot_id": lot_id}
+        except Exception as e:
+            self.log_error(f"record_winner failed: {e}")
+            try:
+                # best-effort error write
+                self._update_winner_capture_processed(evt, processed=0, error=str(e))
+            except Exception:
+                pass
+            return {"action": "error", "error": str(e)}
+
+    def list_miss_queue(self) -> List[Dict]:
+        """Return a snapshot list of queued winners (oldest first)."""
+        with self._lock:
+            return [asdict(x) for x in list(self._miss_queue)]
+
+    def pop_next_miss(self) -> Optional[Dict]:
+        """Pop the next queued winner (FIFO)."""
+        with self._lock:
+            if not self._miss_queue:
+                return None
+            evt = self._miss_queue.popleft()
+        return asdict(evt)
+
+    def apply_sticky_to_username(self, username: Optional[str] = None) -> Optional[int]:
+        """
+        Assign a bin to the provided username; if not provided, use sticky winner.
+        Returns bin number or None.
+        """
+        with self._lock:
+            uname = self._normalize_username(username or self._sticky_username or "")
+        if not uname:
+            return None
+        try:
+            return self.assign_bin(uname)
+        except Exception as e:
+            self.log_error(f"apply_sticky_to_username failed: {e}")
+            return None
+
+    def get_sticky_username(self) -> Optional[str]:
+        with self._lock:
+            return self._sticky_username
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Internal helpers
+    # ─────────────────────────────────────────────────────────────────────────────
+    def _insert_winner_capture(self, evt: WinnerEvent) -> None:
+        try:
+            cur = self.conn.cursor()
+            cur.execute("""
+                INSERT INTO winner_capture (username, lot_id, source, confidence, ts, processed, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (evt.username, evt.lot_id, evt.source, evt.confidence, evt.ts, evt.processed, evt.error))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            raise RuntimeError(f"winner_capture insert failed: {e}")
+
+    def _update_winner_capture_processed(self, evt: WinnerEvent, processed: int, error: Optional[str]) -> None:
+        try:
+            cur = self.conn.cursor()
+            cur.execute("""
+                UPDATE winner_capture
+                SET processed = ?, error = ?
+                WHERE rowid = (SELECT MAX(rowid) FROM winner_capture WHERE username = ? AND ts = ?)
+            """, (int(processed), error, evt.username, evt.ts))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            # log but don't rethrow to avoid masking the primary flow
+            self.log_error(f"winner_capture update failed: {e}")
+
+    def _enqueue(self, evt: WinnerEvent) -> None:
+        with self._lock:
+            if len(self._miss_queue) == self._miss_queue.maxlen:
+                # Drop oldest to make room
+                self._miss_queue.popleft()
+            self._miss_queue.append(evt)
+
+    @staticmethod
+    def _normalize_username(username: str) -> str:
+        if not username:
+            return ""
+        u = username.strip()
+        if not u:
+            return ""
+        # keep a single leading '@' and lower-case for keys
+        if not u.startswith("@"):
+            u = "@" + u
+        return u.lower()
