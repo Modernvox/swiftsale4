@@ -20,7 +20,41 @@ from gui_qt import SwiftSaleGUI
 from stripe_service_qt import StripeService
 from config_qt import load_config, DEFAULT_TRIAL_EMAIL, get_or_create_install_info, save_install_info
 
-load_dotenv()
+def _load_env_robust():
+    """
+    Load .env without overriding real env vars.
+    Search order:
+      1) next to the frozen EXE (if frozen)
+      2) the package directory (where this file lives)
+      3) the parent of the package directory (repo root, common during dev)
+      4) the current working directory
+      5) the SwiftSaleApp user data dir (handy if you drop a .env there)
+    """
+    paths = []
+    try:
+        base_dir = os.path.abspath(os.path.dirname(__file__))
+    except Exception:
+        base_dir = os.getcwd()
+
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        paths.append(os.path.join(exe_dir, ".env"))
+
+    paths.extend([
+        os.path.join(base_dir, ".env"),
+        os.path.join(os.path.dirname(base_dir), ".env"),
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp', '.env'),
+    ])
+
+    # Load the first few that exist; do NOT override OS envs
+    for p in paths:
+        if os.path.exists(p):
+            load_dotenv(dotenv_path=p, override=False)
+
+# Call BEFORE anything reads env or constructs config
+_load_env_robust()
+
 app = QApplication.instance() or QApplication(sys.argv)
 qt_dir = os.path.abspath(os.path.dirname(__file__))
 user_data_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
@@ -307,7 +341,6 @@ def main():
 
     stripe_service = StripeService(
         stripe_secret_key=config["STRIPE_SECRET_KEY"],
-        webhook_secret=config["STRIPE_WEBHOOK_SECRET"],
         api_token=config["API_TOKEN"],
         db_manager=bidder_manager
     )

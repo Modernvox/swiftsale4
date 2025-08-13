@@ -260,6 +260,9 @@ class FlaskServer:
         self._settings_path = os.path.join(user_data_dir, "bridge_settings.json")
         self._load_bridge_settings()
 
+        print("DEBUG: API_TOKEN is", self.api_token)
+
+
         # Wire routes, sockets, errors
         self._register_routes()
         self._register_socketio_events()
@@ -348,22 +351,34 @@ class FlaskServer:
         def env_check():
             """
             Token-gated env inspector.
-            - Pass API token via header X-API-Token or ?api_token=...
-            - Redacts secrets; lists missing required vars based on toggles.
+            Accepts:
+              - Header:  X-API-Token: <token>
+              - Header:  Authorization: Bearer <token>
+              - Query:   ?api_token=<token>  or  ?token=<token>
+            Always reads API_TOKEN from environment at request time.
             """
-            api_token = os.getenv("API_TOKEN", "")
+            import os, hmac
+
+            # Always pull directly from environment
+            expected = os.getenv("API_TOKEN", "").strip()
+
             supplied = (
-                request.headers.get("X-API-Token") == api_token
-                or request.args.get("api_token") == api_token
+                request.headers.get("X-API-Token")
+                or (request.headers.get("Authorization", "").split("Bearer ", 1)[1].strip()
+                    if "Bearer " in (request.headers.get("Authorization") or "") else "")
+                or request.args.get("api_token")
+                or request.args.get("token")
+                or ""
             )
-            if not api_token or not supplied:
+
+            if not expected or not hmac.compare_digest(str(supplied), str(expected)):
                 return jsonify({"ok": False, "error": "unauthorized"}), 401
 
             server_mode = (os.getenv("RENDER", "").lower() == "true") or _bool_env("SERVER_MODE", False)
             use_webhooks = _bool_env("USE_STRIPE_WEBHOOKS", False)
             require_public_for_templates = _bool_env("REQUIRE_STRIPE_PUBLIC_FOR_TEMPLATES", False)
 
-            # Always required in server mode
+            # Required vars
             required = ["SECRET_KEY", "APP_BASE_URL", "DATABASE_URL", "API_TOKEN"]
             if use_webhooks:
                 required += ["STRIPE_PUBLIC_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
@@ -728,6 +743,38 @@ class FlaskServer:
 # Entrypoint
 # -----------------------------
 if __name__ == "__main__":
+    # --- .env loader (works for both source & PyInstaller exe) --------------
+    try:
+        from dotenv import load_dotenv
+        import sys as _sys, os as _os
+
+        def _load_env_robust():
+            """Load .env without overriding existing OS env vars."""
+            paths = []
+            try:
+                here = _os.path.abspath(_os.path.dirname(__file__))
+            except Exception:
+                here = _os.getcwd()
+
+            if getattr(_sys, "frozen", False):
+                paths.append(_os.path.join(_os.path.dirname(_sys.executable), ".env"))
+
+            paths.extend([
+                _os.path.join(here, ".env"),
+                _os.path.join(_os.path.dirname(here), ".env"),
+                _os.path.join(_os.getcwd(), ".env"),
+                _os.path.join(_os.getenv('LOCALAPPDATA', _os.path.expanduser("~")), 'SwiftSaleApp', '.env'),
+            ])
+
+            for p in paths:
+                if _os.path.exists(p):
+                    load_dotenv(dotenv_path=p, override=False)
+
+        _load_env_robust()
+    except Exception:
+        pass
+    # ------------------------------------------------------------------------
+
     cfg = load_config()
     port = int(cfg.get("PORT", 10000))
 
