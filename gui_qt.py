@@ -22,8 +22,8 @@ from config_qt import (
 )
 from bidder_manager_qt import BidderManager
 from telegram_qt import TelegramService
-from flask_server_qt import FlaskServer
-from stripe_service_qt import StripeService
+# from flask_server_qt import FlaskServer  # (unused in this file)
+# from stripe_service_qt import StripeService  # REMOVED
 from reportlab.lib.units import inch
 from annotate_labels_qt import annotate_whatnot_pdf_with_bins_and_firstname
 from dotenv import load_dotenv
@@ -59,7 +59,7 @@ class AutoPasteLineEdit(QLineEdit):
 
 class SwiftSaleGUI(QMainWindow):
     def __init__(
-        self, stripe_service, api_token, user_email, base_url, dev_unlock_code,
+        self, api_token, user_email, base_url, dev_unlock_code,
         telegram_bot_token, telegram_chat_id, dev_access_granted, log_info,
         log_error, bidder_manager, bidders_db_path, subs_db_path
     ):
@@ -72,7 +72,7 @@ class SwiftSaleGUI(QMainWindow):
         self.dev_access_granted = dev_access_granted
         self.log_info = log_info
         self.log_error = log_error
-        self.stripe_service = stripe_service
+        # self.stripe_service = stripe_service  # REMOVED
         self.api_token = api_token.strip()
         self.base_url = (base_url or "").rstrip("/")
         self.telegram_bot_token = telegram_bot_token
@@ -151,18 +151,29 @@ class SwiftSaleGUI(QMainWindow):
                     else:
                         self.log_info(f"No cloud record found for {self.user_email}, using local data")
 
-                    # Only verify with Stripe if tier is still Trial
+                    # If still Trial, optionally ask the local bridge for status (no Stripe)
                     if self.tier.lower() == "trial":
-                        self.tier, self.license_key = self.stripe_service.verify_subscription(
-                            self.user_email, self.tier, self.install_id
-                        )
-                        if self.tier != install_config.get('tier'):
-                            self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-                            save_install_info(self.user_email, self.install_id, self.tier)
-                            self.cloud_db.update_install_tier(hashed_email, self.tier)
-                            self.log_info(f"⬆️ Stripe fallback: Updated tier to {self.tier} for {self.user_email}")
+                        try:
+                            r = requests.get(
+                                f"{self._bridge_base()}/subscription-status",
+                                params={"email": self.user_email},
+                                timeout=5
+                            )
+                            if r.ok:
+                                data = r.json() or {}
+                                remote_tier = str(data.get("tier", "")).strip()
+                                if remote_tier and remote_tier.lower() != "trial":
+                                    self.tier = remote_tier
+                                    self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+                                    save_install_info(self.user_email, self.install_id, self.tier)
+                                    if self.cloud_db:
+                                        self.cloud_db.update_install_tier(hashed_email, self.tier)
+                                    self.log_info(f"Updated tier via bridge status to {self.tier} for {self.user_email}")
+                        except Exception as _e:
+                            # Non-fatal; continue with Trial
+                            self.log_info("Bridge subscription-status not available; continuing with Trial")
             except Exception as e:
-                self.log_error(f"Cloud sync or Stripe fallback failed: {e}")
+                self.log_error(f"Cloud sync or bridge status check failed: {e}")
                 self.cloud_db = None
 
         self.telegram_service = None
@@ -194,8 +205,6 @@ class SwiftSaleGUI(QMainWindow):
         self.log_info("bind_settings_methods completed, checking build_settings_ui: " + str(hasattr(self, "build_settings_ui")))
         bind_event_methods(self)
         self.log_info("bind_event_methods completed, checking on_upgrade: " + str(hasattr(self, "on_upgrade")))
-      
-
 
         # Setup UI after binding methods
         setup_ui(self, self.is_dev_mode)
@@ -482,8 +491,7 @@ class SwiftSaleGUI(QMainWindow):
                 self.sio.disconnect()
             except Exception:
                 pass
-        if self.stripe_service and self.stripe_service.db_manager:
-            self.stripe_service.db_manager.close()
+        # Stripe cleanup removed
         event.accept()
 
     def auto_paste_username(self, event):
@@ -920,7 +928,7 @@ class SwiftSaleGUI(QMainWindow):
                 self.bridge_mode = str(r.json().get("mode", new_mode))
                 self.qsettings.setValue("bridge/mode", self.bridge_mode)
                 self.qsettings.setValue("bridge/auto_capture", self.bridge_mode == "auto")
-                self.show_temporary_message(f"Capture mode: {self.bridge_mode.upper()}")
+                self.show_temporary_message(f"Capture mode: {self.bridge_mode.UPPER()}")
             else:
                 QMessageBox.warning(self, "Bridge", "Failed to change capture mode.")
         except Exception as e:

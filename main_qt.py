@@ -1,3 +1,5 @@
+# main_qt.py — Stripe-free
+
 import os
 import sys
 import time
@@ -17,19 +19,10 @@ from telegram_qt import TelegramService
 from bidder_manager_qt import BidderManager
 from flask_server_qt import FlaskServer
 from gui_qt import SwiftSaleGUI
-from stripe_service_qt import StripeService
+# REMOVED: from stripe_service_qt import StripeService
 from config_qt import load_config, DEFAULT_TRIAL_EMAIL, get_or_create_install_info, save_install_info
 
 def _load_env_robust():
-    """
-    Load .env without overriding real env vars.
-    Search order:
-      1) next to the frozen EXE (if frozen)
-      2) the package directory (where this file lives)
-      3) the parent of the package directory (repo root, common during dev)
-      4) the current working directory
-      5) the SwiftSaleApp user data dir (handy if you drop a .env there)
-    """
     paths = []
     try:
         base_dir = os.path.abspath(os.path.dirname(__file__))
@@ -46,14 +39,12 @@ def _load_env_robust():
         os.path.join(os.getcwd(), ".env"),
         os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp', '.env'),
     ])
-
-    # Load the first few that exist; do NOT override OS envs
     for p in paths:
         if os.path.exists(p):
             load_dotenv(dotenv_path=p, override=False)
 
 # Call BEFORE anything reads env or constructs config
-_load_env_robust()
+__ = _load_env_robust()
 
 app = QApplication.instance() or QApplication(sys.argv)
 qt_dir = os.path.abspath(os.path.dirname(__file__))
@@ -71,7 +62,7 @@ def custom_log(level, message):
     except Exception:
         pass
     try:
-        with open(log_file, 'a') as f:
+        with open(log_file, 'a', encoding="utf-8") as f:
             f.write(log_message)
     except Exception as e:
         sys.stderr.write(f"Failed to write to log: {e}\n")
@@ -130,9 +121,7 @@ def create_blank_bidders_db(path):
     with sqlite3.connect(path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS schema_version (
-                version TEXT PRIMARY KEY
-            );
+            CREATE TABLE IF NOT EXISTS schema_version (version TEXT PRIMARY KEY);
         """)
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES ('1.0');")
         cursor.execute("""
@@ -179,9 +168,7 @@ def create_blank_subscriptions_db(path):
     with sqlite3.connect(path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS schema_version (
-                version TEXT PRIMARY KEY
-            );
+            CREATE TABLE IF NOT EXISTS schema_version (version TEXT PRIMARY KEY);
         """)
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES ('1.0');")
         cursor.execute("""
@@ -242,7 +229,7 @@ def wait_for_server(url, timeout=30):
     raise RuntimeError("Flask server did not start in time")
 
 # --------------------------------------------------
-# UI-thread invoker (prevents QObject::setParent / startTimer warnings)
+# UI-thread invoker
 # --------------------------------------------------
 class UiInvoker(QObject):
     invoke = Signal(object)  # fn
@@ -339,11 +326,7 @@ def main():
         log_error=log_error,
     )
 
-    stripe_service = StripeService(
-        stripe_secret_key=config["STRIPE_SECRET_KEY"],
-        api_token=config["API_TOKEN"],
-        db_manager=bidder_manager
-    )
+    # REMOVED: StripeService entirely
 
     telegram_service = TelegramService(
         bot_token=config["TELEGRAM_BOT_TOKEN"],
@@ -362,11 +345,11 @@ def main():
         except Exception as e:
             log_error(f"Failed to initialize CloudDatabaseManager: {e}", exc_info=True)
 
-    # Start Flask (Waitress) in background thread
+    # Start Flask (Waitress) in background thread — pass stripe_service=None
     flask_server = FlaskServer(
         port=port,
-        stripe_service=stripe_service,
-        api_token=config["API_TOKEN"],
+        stripe_service=None,                       # <<< no stripe
+        api_token=config.get("API_TOKEN", ""),     # keep if your /env-check expects it
         latest_bin_assignment_callback=latest_bin_callback,
         secret_key=config["SECRET_KEY"],
         log_info=log_info,
@@ -378,10 +361,10 @@ def main():
     threading.Thread(target=flask_server.start, daemon=True).start()
     wait_for_server(f"http://localhost:{port}/health")
 
-    # Build GUI
+    # Build GUI — pass stripe_service=None
     gui = SwiftSaleGUI(
-        stripe_service=stripe_service,
-        api_token=config["API_TOKEN"],
+        stripe_service=None,                       # <<< no stripe
+        api_token=config.get("API_TOKEN", ""),
         user_email=user_email,
         base_url=config["APP_BASE_URL"],
         dev_unlock_code=config.get("DEV_UNLOCK_CODE", ""),
@@ -398,30 +381,26 @@ def main():
     gui.cloud_db = cloud_db
     gui.telegram_service = telegram_service
 
-    # Safe UI invoker (use this from ANY background thread)
+    # Safe UI invoker
     ui_invoker = UiInvoker(parent=gui, log_err=log_error)
     gui.invoke_on_ui = lambda fn: ui_invoker.invoke.emit(fn)
 
-    # --- Socket.IO client: force polling & keep UI updates on main thread ---
+    # Socket.IO client (polling)
     try:
-        # Optional: lightweight client-side event hooks (no direct Qt calls)
         gui.sio.on('connect', lambda: log_info("Socket.IO connected"))
         gui.sio.on('disconnect', lambda: log_info("Socket.IO disconnected"))
 
-        # Example listener: if you want a tiny heads-up on wins, marshal to UI first
         def _on_winner(data):
             username = (data or {}).get("username") or "unknown"
             gui.invoke_on_ui(lambda: gui.show_temporary_message(f"Winner: {username}"))
 
         gui.sio.on('winner', _on_winner)
-
-        # Connect using polling only (Waitress cannot upgrade to websockets)
         gui.sio.connect(config["APP_BASE_URL"], transports=['polling'], wait_timeout=3)
         log_info("Socket.IO client connected (polling)")
     except Exception as e:
         log_error(f"Socket.IO connect failed: {e}")
 
-    # Sync cloud install info (tier/license) into local
+    # Optional cloud sync
     if cloud_db and user_email:
         try:
             cloud_db.sync_with_local(bidder_manager, user_email)
@@ -440,7 +419,6 @@ def main():
 
     def on_closing():
         try:
-            # Cleanly disconnect Socket.IO
             if getattr(gui, "sio", None):
                 try:
                     if gui.sio.connected:

@@ -10,24 +10,15 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from waitress import serve
 from config_qt import (
-    PRICE_MAP,
-    REVERSE_PRICE_MAP,
-    TIER_LIMITS,
     load_config,
     get_resource_path,
     DEFAULT_DATA_DIR,
     get_config_value,
     sanitize_username,  # <- for safe username handling
 )
-from stripe_service_qt import StripeService
 from bidder_manager_qt import BidderManager
-import stripe  # noqa
-import zipfile  # noqa
-import io  # noqa
-import requests  # noqa
 import hashlib
 from urllib.parse import urlparse
-# psycopg2 moved to lazy import inside get_db_connection()
 from datetime import datetime
 import re
 import time
@@ -166,16 +157,18 @@ class RecentWins:
         return False
 
 class FlaskServer:
-    def __init__(self, port, stripe_service, api_token: str,
-                 latest_bin_assignment_callback, secret_key: str,
-                 log_info, log_error, user_data_dir=None,
-                 bidder_manager=None, telegram_service=None):
+    def __init__(self, port,
+                 latest_bin_assignment_callback,
+                 secret_key: str,
+                 log_info, log_error,
+                 user_data_dir=None,
+                 bidder_manager=None,
+                 telegram_service=None):
         # -----------------------------
         # Environment / paths
         # -----------------------------
         self.env = os.getenv("FLASK_ENV", "development").lower()
         self.port = int(os.getenv("PORT", port))
-        self.api_token = os.getenv("API_TOKEN", api_token)
         self.secret_key = os.getenv("SECRET_KEY", secret_key)
         user_data_dir = os.getenv(
             "RENDER_DATA_DIR",
@@ -206,13 +199,11 @@ class FlaskServer:
         logging.getLogger("socketio").setLevel(logging.WARNING)
         logging.getLogger("socketio.server").setLevel(logging.WARNING)
 
-
         # -----------------------------
         # Services / state
         # -----------------------------
         self.log_info = log_info
         self.log_error = log_error
-        self.stripe_service = stripe_service
         self.latest_bin_assignment_callback = latest_bin_assignment_callback
         self.bidder_manager = bidder_manager
         self.telegram_service = telegram_service
@@ -259,9 +250,6 @@ class FlaskServer:
         self._bridge_mode = "auto"  # "auto" | "manual"
         self._settings_path = os.path.join(user_data_dir, "bridge_settings.json")
         self._load_bridge_settings()
-
-        print("DEBUG: API_TOKEN is", self.api_token)
-
 
         # Wire routes, sockets, errors
         self._register_routes()
@@ -357,11 +345,9 @@ class FlaskServer:
               - Query:   ?api_token=<token>  or  ?token=<token>
             Always reads API_TOKEN from environment at request time.
             """
-            import os, hmac
+            import hmac
 
-            # Always pull directly from environment
             expected = os.getenv("API_TOKEN", "").strip()
-
             supplied = (
                 request.headers.get("X-API-Token")
                 or (request.headers.get("Authorization", "").split("Bearer ", 1)[1].strip()
@@ -378,7 +364,7 @@ class FlaskServer:
             use_webhooks = _bool_env("USE_STRIPE_WEBHOOKS", False)
             require_public_for_templates = _bool_env("REQUIRE_STRIPE_PUBLIC_FOR_TEMPLATES", False)
 
-            # Required vars
+            # Required vars (Stripe removed unless you explicitly enable flags above)
             required = ["SECRET_KEY", "APP_BASE_URL", "DATABASE_URL", "API_TOKEN"]
             if use_webhooks:
                 required += ["STRIPE_PUBLIC_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
@@ -412,8 +398,7 @@ class FlaskServer:
         def index():
             return render_template(
                 "index.html",
-                stripe_publishable_key=os.getenv("STRIPE_PUBLIC_KEY", ""),
-                api_token=self.api_token
+                stripe_publishable_key=os.getenv("STRIPE_PUBLIC_KEY", ""),  # harmless if unused in UI
             )
 
         # -------- Updater manifest --------
@@ -427,68 +412,7 @@ class FlaskServer:
             resp.headers["Cache-Control"] = "public, max-age=120"
             return resp, 200
 
-        # -------- Stripe / subscriptions (server-side session; optional) --------
-        @self.app.route('/create-checkout-session', methods=['POST'])
-        def create_checkout_session():
-            if os.getenv("RENDER", "").lower() != "true":
-                return json_error("Checkout is only available from our cloud server.", 403)
-
-            db_url = os.getenv("DATABASE_URL")
-            if not db_url or not db_url.startswith("postgres"):
-                return json_error("DATABASE_URL not set or invalid.", 403)
-
-            data = request.get_json(silent=True) or {}
-            tier = data.get('tier')
-            user_email = data.get('user_email')
-            if not tier or not user_email:
-                return json_error("Missing tier or user_email", 400)
-            try:
-                session, status = self.stripe_service.create_checkout_session(tier, user_email, request.url_root)
-                return json_success(session, status)
-            except Exception as e:
-                self.logger.error(f"Stripe session error: {e}", exc_info=True, extra={"request_id": _reqid()})
-                return json_error(str(e), 500)
-
-        @self.app.route('/subscription-status', methods=['GET'])
-        def subscription_status():
-            email = request.args.get('email')
-            if not email:
-                return json_error("Missing email", 400)
-            try:
-                if not self.stripe_service.db_manager:
-                    self.logger.warning("DB manager not available, falling back to Trial tier", extra={"request_id": _reqid()})
-                    return json_success({"tier": "Trial", "status": "Unavailable", "next_billing_date": "N/A"}, 200)
-
-                tier = self.stripe_service.db_manager.get_user_tier(email)
-                license_key = self.stripe_service.db_manager.get_user_license_key(email)
-                status, next_billing_date = self.stripe_service.get_subscription_status(license_key) if license_key else ("N/A", "N/A")
-                return json_success({"tier": tier or "Trial", "status": status, "next_billing_date": next_billing_date}, 200)
-            except Exception as e:
-                self.logger.error(f"Subscription status error for {email}: {e}", exc_info=True, extra={"request_id": _reqid()})
-                return json_error(str(e), 500)
-
-        # ----------------------------------------------------------------------
-        # Stripe webhook endpoint — YOU SAID TO KEEP IT, BUT COMMENT IT OUT
-        # ----------------------------------------------------------------------
-        # if _bool_env("USE_STRIPE_WEBHOOKS", False):
-        #     @self.app.route('/stripe/webhook', methods=['POST'])
-        #     def stripe_webhook():
-        #         if os.getenv("RENDER", "").lower() != "true":
-        #             return "", 200
-        #         try:
-        #             payload = request.get_data(cache=False)
-        #             sig_header = request.headers.get('Stripe-Signature')
-        #             if not payload or not sig_header:
-        #                 self.logger.error("Webhook missing payload or signature header", extra={"request_id": _reqid()})
-        #                 return json_error("Missing signature or payload", 400)
-        #             status_code, response = self.stripe_service.handle_webhook(payload, sig_header)
-        #             if isinstance(response, dict):
-        #                 return json_success(response, status_code)
-        #             return response, status_code
-        #         except Exception as e:
-        #             self.logger.error(f"Webhook endpoint error: {e}", exc_info=True, extra={"request_id": _reqid()})
-        #             return json_error("Webhook endpoint failure", 500)
-
+        # -------- Register install (cloud only) --------
         @self.app.route('/register-install', methods=['POST'])
         def register_install():
             if os.getenv("RENDER", "").lower() != "true":
@@ -667,7 +591,7 @@ class FlaskServer:
                 if self.bidder_manager and hasattr(self.bidder_manager, "record_winner"):
                     force_queue = (self._bridge_mode == "manual")
                     result = self.bidder_manager.record_winner(
-                        username=username_display,  # keep '@' for display if your UI expects it
+                        username=username_display,
                         lot_id=lot_id,
                         source=source,
                         confidence=confidence,
@@ -782,17 +706,11 @@ if __name__ == "__main__":
     subs_db_path = os.path.join(DEFAULT_DATA_DIR, "subscriptions_qt.db")
 
     bidder_manager = BidderManager(bidders_db_path, subs_db_path)
-    stripe_service = StripeService(
-        stripe_secret_key=cfg.get("STRIPE_SECRET_KEY", ""),
-        webhook_secret=cfg.get("STRIPE_WEBHOOK_SECRET", ""),
-        db_manager=bidder_manager,
-        api_token=cfg.get("API_TOKEN", "")
-    )
+
+    # No StripeService — payment links (if any) handled client-side only
 
     server = FlaskServer(
         port=port,
-        stripe_service=stripe_service,
-        api_token=cfg.get("API_TOKEN", ""),
         latest_bin_assignment_callback=None,
         secret_key=cfg.get("SECRET_KEY", os.urandom(24).hex()),
         log_info=print,

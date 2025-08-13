@@ -4,7 +4,8 @@ Patched GUI event handlers for SwiftSale.
 Changes in this version:
 - Dev code validation prefers cloud DB, then your Flask endpoint
   (/api/validate-dev-code), then offline fallback codes.
-- Removed direct Postgres credential usage from the client.
+- Removed ANY Stripe API usage; upgrade opens static payment links by tier.
+- No polling against Stripe; you can sync tier from your cloud DB after payment.
 - Sell rate calculation delegates to bidder_manager.get_avg_sell_rate().
 - More defensive error handling and UI updates.
 """
@@ -16,13 +17,15 @@ import time
 import sqlite3
 import requests
 import re
+import os
+import webbrowser
 
 from PySide6.QtCore import Qt, QTimer, QEasingCurve, QRect, QPropertyAnimation
-from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut   # ← QShortcut here
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QMessageBox, QApplication, QInputDialog, QProgressDialog,
-    QCheckBox, QWidget, QFrame, QHBoxLayout, QLabel,               # ← no QShortcut here
-    QGraphicsOpacityEffect,                                        # ← lives in QtWidgets
+    QMessageBox, QApplication, QInputDialog,
+    QCheckBox, QWidget, QFrame, QHBoxLayout, QLabel,
+    QGraphicsOpacityEffect,
 )
 
 try:
@@ -32,6 +35,7 @@ except Exception:
     _get_clip_seq = None
 
 from config_qt import save_install_info
+
 from gui_help_qt import (
     show_telegram_help,
     show_import_csv_help,
@@ -41,6 +45,27 @@ from gui_help_qt import (
     show_top_buyer_help,
     show_flash_sale_text_help,
 )
+
+# ---------------------------------------------------------------------------
+# Payment links (Stripe-free)
+# ---------------------------------------------------------------------------
+
+def _payment_links_from_env() -> dict:
+    """
+    Pull per-tier payment/checkout links from environment.
+    Define (for example) in .env or Render env:
+      PAYMENT_LINK_BRONZE=https://buy.stripe.com/... or any external link
+      PAYMENT_LINK_SILVER=...
+      PAYMENT_LINK_GOLD=...
+    If a link is missing, we fall back to a generic pricing page if provided:
+      PRICING_URL=https://your-site/pricing
+    """
+    return {
+        "Bronze": os.getenv("PAYMENT_LINK_BRONZE"),
+        "Silver": os.getenv("PAYMENT_LINK_SILVER"),
+        "Gold":   os.getenv("PAYMENT_LINK_GOLD"),
+        "_fallback": os.getenv("PRICING_URL"),
+    }
 
 # ---------------------------------------------------------------------------
 # Giveaway / Flash Sale helpers
@@ -59,7 +84,6 @@ def start_giveaway(self):
     else:
         self.log_error("Giveaway input field not found.")
 
-
 def start_flash_sale(self):
     """Copy the flash sale message from settings to clipboard."""
     if hasattr(self, "flash_sale_entry"):
@@ -72,7 +96,6 @@ def start_flash_sale(self):
             self.log_error("No flash sale message set.")
     else:
         self.log_error("Flash sale input field not found.")
-
 
 # ---------------------------------------------------------------------------
 # Sell rate
@@ -110,7 +133,6 @@ def show_avg_sell_rate(self, show_message=True):
 
     self.stats_label.setText(concise_text)
     self.log_info(f"Updated sell rate: {concise_text}")
-
 
 # ---------------------------------------------------------------------------
 # Top buyers
@@ -150,7 +172,6 @@ def copy_top_buyer_message(self, event):
         self.log_error(f"Unexpected error in copy_top_buyer_message: {e}")
         QMessageBox.warning(self, "Warning", "No top buyers found")
 
-
 def on_username_changed(self):
     """Update add bidder button style based on username changes."""
     current_username = (self.username_entry.text() or "").strip()
@@ -159,7 +180,6 @@ def on_username_changed(self):
     else:
         self.add_bidder_button.setStyleSheet("background-color: green; font-weight: bold;")
     self._last_seen_username = current_username
-
 
 # ---------------------------------------------------------------------------
 # Developer code dialog
@@ -200,11 +220,10 @@ def _try_validate_via_flask(self, code: str):
         if data.get("status") == "success" and data.get("valid"):
             # Normalize a consistent shape
             return {
-                "tier": "Gold",            # server doesn’t send tier; treat dev as Gold by policy
-                "license_key": "DEV_MODE", # dev unlock is not a billable license
+                "tier": "Gold",            # dev treated as Gold by policy
+                "license_key": "DEV_MODE",
                 "email": data.get("email")
             }
-        # Older server variant returns {"valid": True, "email": "..."}
         if data.get("valid"):
             return {
                 "tier": "Gold",
@@ -230,7 +249,7 @@ class _SuccessToast(QWidget):
         self._frame.setObjectName("toastFrame")
         self._frame.setStyleSheet("""
             QFrame#toastFrame {
-                background: #10B981;            /* emerald-500 */
+                background: #10B981;
                 color: white;
                 border-radius: 10px;
                 padding: 10px 14px;
@@ -264,7 +283,6 @@ class _SuccessToast(QWidget):
         self.resize(self._frame.sizeHint())
 
     def show_success(self, text: str, duration_ms: int = 1000):
-        # reset animation/opacity
         if self._anim.state() == QPropertyAnimation.Running:
             self._anim.stop()
         self._eff.setOpacity(1.0)
@@ -289,12 +307,9 @@ class _SuccessToast(QWidget):
     def _fade_and_close(self):
         self._anim.start()
 
-
 # ---------------------------------------------------------------------------
 # Clipboard Auto-capture (submit once per copy)
 # ---------------------------------------------------------------------------
-
-# --- inside gui_events.py ---
 
 def install_clipboard_capture(self):
     self._success_toast = _SuccessToast(self)
@@ -316,9 +331,6 @@ def install_clipboard_capture(self):
     from PySide6.QtGui import QGuiApplication, QClipboard
     self._clipboard = QGuiApplication.clipboard()
 
-    # 🔒 Disable the signal path to remove the race with polling
-    # self._clipboard.dataChanged.connect(self._on_clipboard_change)
-
     # Polling fallback — becomes the primary path
     from PySide6.QtCore import QTimer
     self._clip_poll = QTimer(self)
@@ -334,9 +346,7 @@ def install_clipboard_capture(self):
     except Exception:
         pass
 
-
 def _poll_clipboard(self):
-
     from PySide6.QtGui import QClipboard
     seq_now = self._get_clip_seq() if getattr(self, "_get_clip_seq", None) else None
     if seq_now is not None and seq_now == self._clip_seq_last:
@@ -355,7 +365,6 @@ def _poll_clipboard(self):
         if seq_now is not None:
             self._clip_seq_last = seq_now
 
-
 def _on_clipboard_change(self):
     """Signal path; also respects Windows sequence when available."""
     if hasattr(self, "auto_capture_checkbox") and not self.auto_capture_checkbox.isChecked():
@@ -373,7 +382,6 @@ def _on_clipboard_change(self):
         self._last_clip_at = now
         if seq_now is not None:
             self._clip_seq_last = seq_now
-
 
 def _maybe_submit_username(self, raw: str, source: str) -> bool:
     username = _extract_username(raw)
@@ -408,7 +416,6 @@ def _maybe_submit_username(self, raw: str, source: str) -> bool:
         self.statusBar().showMessage(f"Add failed: {e}", 3000)
         return False
 
-
 def _extract_username(text: str) -> str | None:
     text = (text or "").strip().strip(",.;:!?)(")
     m = re.search(r'@?([A-Za-z0-9](?:[A-Za-z0-9._-]{0,28}[A-Za-z0-9])?)', text)
@@ -416,7 +423,6 @@ def _extract_username(text: str) -> str | None:
         return None
     u = m.group(1)
     return u if len(u) >= 2 else None
-
 
 def _resolve_bin_for_username(self, username: str):
     bm = getattr(self, "bidder_manager", None)
@@ -428,101 +434,16 @@ def _resolve_bin_for_username(self, username: str):
                 pass
     return getattr(self, "_last_assigned_bin", None)
 
-
-
-def open_dev_code_dialog(self):
-    """Prompt user to enter the developer unlock code."""
-    code, ok = QInputDialog.getText(self, "Enter Dev Code", "Enter Promo Code:")
-    if not (ok and (code or "").strip()):
-        return
-
-    code = code.strip()          # preserve case if your codes are case-sensitive
-    install_id = self.install_id or "unknown-device"
-
-    # 1) Offline quick path
-    if code in _OFFLINE_DEV_CODES:
-        result = _OFFLINE_DEV_CODES[code]
-        self.dev_access_granted = True
-        self.tier = result["tier"]
-        self.license_key = result["license_key"]
-        save_install_info(self.user_email, self.install_id, self.tier)
-        hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
-        self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-        if getattr(self, "cloud_db", None):
-            try:
-                self.cloud_db.update_install_tier(hashed_email, self.tier, install_id=self.install_id)
-            except Exception as e:
-                self.log_error(f"Cloud sync (offline dev) failed: {e}")
-        self.log_info(f"Offline dev code used – {code} | install_id={install_id}")
-        QMessageBox.information(self, "Access Granted", f"Developer access enabled – {self.tier} Tier.")
-        self.update_subscription_ui()
-        self.update_header_and_footer()
-        self.refresh_bin_usage_display()
-        return
-
-    # 2) Cloud / 3) Flask endpoint
-    try:
-        result = None
-        # prefer cloud DB
-        try:
-            result = _try_validate_via_cloud(self, code)
-        except Exception as e:
-            self.log_error(f"Cloud dev-code validation failed: {e}")
-
-        # fallback to Flask endpoint
-        if not result:
-            result = _try_validate_via_flask(self, code)
-
-        # Adopt results
-        self.dev_access_granted = True
-        self.tier = result.get("tier", "Gold")
-        self.license_key = result.get("license_key", "DEV_MODE")
-        new_email = result.get("email")
-        if new_email:
-            self.user_email = new_email
-
-        # 15-day promo window
-        promo_expiration = datetime.utcnow() + timedelta(days=15)
-        save_install_info(self.user_email, self.install_id, self.tier, promo_expiration=promo_expiration)
-
-        hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
-        self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-
-        if getattr(self, "cloud_db", None):
-            try:
-                self.cloud_db.update_install_tier(
-                    hashed_email,
-                    self.tier,
-                    install_id=self.install_id,
-                    promo_expiration=promo_expiration,
-                )
-            except Exception as e:
-                self.log_error(f"Cloud sync (dev) failed: {e}")
-
-        self.log_info(
-            f"Dev code validated – {code} | {self.user_email} | install_id={install_id} | "
-            f"expires {promo_expiration}"
-        )
-        QMessageBox.information(
-            self,
-            "Access Granted",
-            f"Developer access enabled – {self.tier} Tier.\n\n"
-            f"This promo will expire on {promo_expiration.strftime('%Y-%m-%d')}",
-        )
-        self.update_subscription_ui()
-        self.update_header_and_footer()
-        self.refresh_bin_usage_display()
-    except Exception as e:
-        self.log_error(f"Dev unlock failed: {e}")
-        QMessageBox.warning(self, "Access Denied", str(e))
-
-
 # ---------------------------------------------------------------------------
-# Upgrade flow (unchanged logic; small cleanup)
+# Upgrade flow (Stripe-free)
 # ---------------------------------------------------------------------------
 
 def on_upgrade(self):
-    """Handle clicking the Upgrade button in the Subscription tab with real-time refresh."""
+    """
+    Handle Upgrade click:
+    - Open a static payment link for the selected tier (from env).
+    - Show instructions to return and click “Sync License” (your UI) after payment.
+    """
     new_tier = self.tier_combo.currentText()
     if new_tier == self.tier:
         QMessageBox.information(self, "Info", f"You are already on the {new_tier} tier.")
@@ -532,70 +453,68 @@ def on_upgrade(self):
         QMessageBox.critical(self, "Error", "Missing email. Please set your email before upgrading.")
         return
 
-    try:
-        self.log_info(f"Creating Stripe checkout session for {self.user_email} upgrading to {new_tier}")
-        response, status = self.stripe_service.create_checkout_session(
-            tier=new_tier,
-            user_email=self.user_email,
-            request_url_root="https://swiftsale4.onrender.com/",
+    links = _payment_links_from_env()
+    url = links.get(new_tier) or links.get("_fallback")
+
+    if not url:
+        QMessageBox.critical(
+            self,
+            "Upgrade",
+            "No payment link configured. Set PAYMENT_LINK_BRONZE/SILVER/GOLD or PRICING_URL in your environment."
         )
+        return
 
-        if status == 200 and response.get("url"):
-            import webbrowser
-            webbrowser.open(response["url"])
-            self.log_info(f"Opened Stripe Checkout URL: {response['url']}")
-
-            QMessageBox.information(
-                self, "Upgrade",
-                "Stripe Checkout has opened in your browser.\n\nWe'll check your upgrade status shortly.",
-            )
-
-            self.polling_dialog = QProgressDialog("Verifying upgrade...", None, 0, 0, self)
-            self.polling_dialog.setWindowTitle("Please Wait")
-            self.polling_dialog.setCancelButton(None)
-            self.polling_dialog.setWindowModality(Qt.ApplicationModal)
-            self.polling_dialog.setMinimumDuration(0)
-            self.polling_dialog.setAutoClose(False)
-            self.polling_dialog.show()
-
-            threading.Thread(target=self._poll_subscription_status, args=(new_tier,), daemon=True).start()
-        else:
-            error_msg = response.get("error", "Upgrade failed: No checkout URL returned.")
-            self.log_error(f"Stripe checkout creation failed: {error_msg}")
-            QMessageBox.critical(self, "Error", error_msg)
-
+    try:
+        webbrowser.open(url)
+        self.log_info(f"Opened payment link for {new_tier}: {url}")
+        QMessageBox.information(
+            self,
+            "Upgrade",
+            "Your upgrade page has opened in the browser.\n\n"
+            "After completing payment, click 'Sync License' (or restart) to refresh your tier."
+        )
     except Exception as e:
-        self.log_error(f"Upgrade error: {e}")
-        QMessageBox.critical(self, "Error", f"Failed to upgrade subscription: {e}")
-
+        self.log_error(f"Failed to open payment link: {e}")
+        QMessageBox.critical(self, "Error", f"Could not open payment link:\n{e}")
 
 def _poll_subscription_status(self, expected_tier, max_retries=6, delay=4):
-    """Poll Stripe for subscription status every few seconds until upgraded or timeout."""
-    self.log_info(f"🔁 Polling subscription status for upgrade to {expected_tier}")
+    """
+    Deprecated when Stripe API is removed; kept as a soft helper:
+    Try to detect a tier change by checking the local DB/cloud sync.
+    """
+    self.log_info(f"Polling for tier change to {expected_tier} (Stripe-free mode)")
     try:
         for _ in range(max_retries):
             time.sleep(delay)
-            status, _ = self.stripe_service.get_subscription_status(self.license_key)
-            if status and status.lower() == expected_tier.lower():
-                self.tier = expected_tier
-                self.log_info(f"✅ Upgrade confirmed: {self.tier}")
+            # Try cloud sync if available
+            if getattr(self, "cloud_db", None) and getattr(self, "user_email", None):
+                try:
+                    self.cloud_db.sync_with_local(self.bidder_manager, self.user_email)
+                except Exception as e:
+                    self.log_error(f"Cloud sync during poll failed: {e}")
+
+            # Read tier from local manager
+            try:
+                current = self.bidder_manager.get_tier_for_user(self.user_email) or self.tier
+            except Exception:
+                current = self.tier
+
+            if current and current.lower() == expected_tier.lower():
+                self.tier = current
+                self.log_info(f"Upgrade confirmed by local/cloud: {self.tier}")
                 save_install_info(self.user_email, self.install_id, self.tier)
                 hashed_email = hashlib.sha256(self.user_email.encode()).hexdigest()
-                self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
-                if getattr(self, "cloud_db", None):
-                    try:
-                        self.cloud_db.update_install_tier(hashed_email, self.tier)
-                    except Exception as e:
-                        self.log_error(f"Failed to sync updated tier to cloud DB: {e}")
+                try:
+                    self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+                except Exception as e:
+                    self.log_error(f"Failed to write updated tier locally: {e}")
                 self.update_subscription_ui()
                 self.update_header_and_footer()
                 break
         else:
-            self.log_info("🔁 Upgrade confirmation timed out")
-    finally:
-        if hasattr(self, "polling_dialog"):
-            self.polling_dialog.cancel()
-
+            self.log_info("Tier change not detected during polling window.")
+    except Exception as e:
+        self.log_error(f"Tier poll error: {e}")
 
 def update_subscription_ui(self):
     """Update the Subscription tab and header/footer labels with current info."""
@@ -627,7 +546,6 @@ def update_subscription_ui(self):
     except Exception as e:
         self.log_error(f"Failed to update subscription UI: {e}")
 
-
 # ---------------------------------------------------------------------------
 # Binders
 # ---------------------------------------------------------------------------
@@ -645,7 +563,7 @@ def bind_event_methods(gui):
     gui.on_upgrade = on_upgrade.__get__(gui, gui.__class__)
     gui.install_clipboard_capture = install_clipboard_capture.__get__(gui, gui.__class__)
     gui._on_clipboard_change = _on_clipboard_change.__get__(gui, gui.__class__)
-    gui._poll_clipboard           = _poll_clipboard.__get__(gui, gui.__class__)
+    gui._poll_clipboard = _poll_clipboard.__get__(gui, gui.__class__)
     gui._maybe_submit_username = _maybe_submit_username.__get__(gui, gui.__class__)
 
 def bind_help_methods(gui):
