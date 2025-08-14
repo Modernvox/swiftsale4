@@ -202,36 +202,41 @@ def _try_validate_via_cloud(self, code: str):
     return None
 
 def _try_validate_via_flask(self, code: str):
-    """Validate using local Flask endpoint /api/validate-dev-code."""
+    """Validate using local Flask endpoint /api/validate-dev-code (works in .exe)."""
     base = (getattr(self, "base_url", "") or "").rstrip("/")
     if not base:
         return None
+
+    # IMPORTANT: pass the install_id (bind the code to this install)
+    install_id = getattr(self, "install_id", "") or ""
+    if not install_id:
+        raise Exception("Missing install_id")
+
     url = f"{base}/api/validate-dev-code"
     try:
-        r = requests.get(url, params={"code": code}, timeout=6)
+        r = requests.get(url, params={"code": code, "install_id": install_id}, timeout=8)
+        # Try to extract a clean error from JSON even on 4xx
+        try:
+            payload = r.json()
+        except Exception:
+            payload = {}
+
         if not r.ok:
-            # Bubble up JSON error if present
-            try:
-                err = r.json().get("error")
-                if err:
-                    raise Exception(err)
-            except Exception:
-                pass
-            r.raise_for_status()
-        data = r.json() or {}
-        if data.get("status") == "success" and data.get("valid"):
-            return {
-                "tier": "Gold",            # dev treated as Gold by policy
-                "license_key": "DEV_MODE",
-                "email": data.get("email")
-            }
-        if data.get("valid"):
-            return {
-                "tier": "Gold",
-                "license_key": "DEV_MODE",
-                "email": data.get("email")
-            }
-        raise Exception(data.get("error") or "Invalid or expired developer code.")
+            msg = (payload.get("message") or payload.get("error") or f"HTTP {r.status_code}")
+            raise Exception(msg)
+
+        # Accept both envelope {"status":"success","data":{...}} and flat {"status":"success",...}
+        status = payload.get("status")
+        body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+
+        valid = bool(body.get("valid"))
+        tier = body.get("tier") or "Gold"
+        email = body.get("email")
+
+        if status == "success" and valid:
+            return {"tier": tier, "license_key": "DEV_MODE", "email": email}
+
+        raise Exception(body.get("message") or "Invalid or expired developer code.")
     except Exception as e:
         self.log_error(f"Flask dev-code validation failed: {e}")
         raise

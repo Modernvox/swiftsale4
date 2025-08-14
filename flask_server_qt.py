@@ -529,37 +529,159 @@ class FlaskServer:
 
         @self.app.route('/api/validate-dev-code', methods=['GET'])
         def validate_dev_code():
-            if os.getenv("RENDER", "").lower() != "true":
-                return json_error("Developer code validation only available in cloud environment", 403)
-            code = request.args.get("code")
+            """
+            Validate promo/dev code for desktop AND cloud.
+            Enforces a 2-device limit for Gold by email.
+            Expects: ?code=XYZ&install_id=abcd1234[&device_id=PC123]
+            Returns: {"status":"success","valid":true,"tier":"Gold","email":"user@x.com"}
+            """
+            # DO NOT gate by RENDER here; the desktop .exe must be able to call this locally.
+            code = (request.args.get("code") or "").strip().lower()
+            install_id = (request.args.get("install_id") or "").strip()
+            device_id = (request.args.get("device_id") or "").strip() or install_id
+
             if not code:
                 return json_error("Missing code", 400)
+            if not install_id:
+                return json_error("Missing install_id", 400)
+
+            conn = get_db_connection()
+            if not conn:
+                return json_error("Cloud database connection unavailable", 500)
+
             try:
-                conn = get_db_connection()
-                if not conn:
-                    return json_error("Cloud database connection unavailable", 500)
                 with conn:
                     with conn.cursor() as cur:
-                        code_norm = code.strip().lower()
+                        # Ensure tables exist (safe if already present)
                         cur.execute("""
-                            SELECT email, expires_at, used, assigned_to, device_id
+                            CREATE TABLE IF NOT EXISTS dev_codes (
+                                code TEXT PRIMARY KEY,
+                                email TEXT,
+                                tier TEXT DEFAULT 'Gold',
+                                expires_at TIMESTAMPTZ NULL,
+                                used BOOLEAN DEFAULT FALSE,
+                                used_at TIMESTAMPTZ NULL,
+                                assigned_install_id TEXT NULL,
+                                frozen BOOLEAN DEFAULT FALSE
+                            );
+                        """)
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS installs (
+                                hashed_email TEXT PRIMARY KEY,
+                                install_id   TEXT NOT NULL,
+                                tier         TEXT NOT NULL DEFAULT 'Trial'
+                            );
+                        """)
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS tier_overrides (
+                                install_id TEXT PRIMARY KEY,
+                                tier       TEXT NOT NULL,
+                                expires_at TIMESTAMPTZ NULL
+                            );
+                        """)
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS install_devices (
+                                install_id  TEXT PRIMARY KEY,
+                                email       TEXT NOT NULL,
+                                device_id   TEXT,
+                                first_seen  TIMESTAMPTZ DEFAULT NOW(),
+                                last_seen   TIMESTAMPTZ DEFAULT NOW()
+                            );
+                        """)
+
+                        # Lookup code
+                        cur.execute("""
+                            SELECT email, tier, expires_at, used, frozen, assigned_install_id
                             FROM dev_codes
                             WHERE code = %s
-                        """, (code_norm,))
+                        """, (code,))
                         row = cur.fetchone()
                         if not row:
-                            return json_error("Invalid or expired developer code. Try again or contact support", 404)
+                            return json_error("Invalid or expired developer code.", 404)
 
-                        email, expires_at, used, assigned_to, bound_device = row
+                        email, tier, expires_at, used, frozen, assigned_install_id = row
+                        email_norm = (email or "").strip().lower() if email else None
+
+                        # Validity checks
+                        now_utc = datetime.utcnow()
+                        if frozen:
+                            return json_error("Developer code is frozen. Contact support.", 403)
+                        if expires_at and now_utc > expires_at:
+                            return json_error("Developer code expired. Contact support.", 403)
                         if used:
-                            if expires_at and datetime.utcnow() > expires_at:
-                                return json_error("Developer code expired. Contact support.", 403)
-                            return json_error("Developer code already used. Contact support.", 403)
+                            # Allow idempotent reuse by the SAME install; block others
+                            if not assigned_install_id or assigned_install_id != install_id:
+                                return json_error("Developer code already used. Contact support.", 403)
 
-                        return json_success({"valid": True, "email": email}, 200)
+                        # --- Device limit enforcement (Gold = 2 devices) ---
+                        # Only enforce when we know the email and target tier is Gold (or higher if you expand).
+                        target_tier = (tier or "Gold").strip().title()
+                        if email_norm and target_tier == "Gold":
+                            # Count distinct installs already associated to this email (excluding this install).
+                            cur.execute("""
+                                SELECT COUNT(*) FROM install_devices
+                                WHERE email = %s AND install_id <> %s
+                            """, (email_norm, install_id))
+                            existing = cur.fetchone()[0] or 0
+
+                            # If this install isn't already present and would exceed limit, block.
+                            if existing >= 2:
+                                # Check if current install already registered (idempotency)
+                                cur.execute("SELECT 1 FROM install_devices WHERE install_id = %s AND email = %s", (install_id, email_norm))
+                                if cur.fetchone() is None:
+                                    return json_error("Device limit reached for Gold (2 devices). Contact support to reset.", 403)
+
+                        # Upsert current device → email mapping (so future checks see it)
+                        if email_norm:
+                            cur.execute("""
+                                INSERT INTO install_devices (install_id, email, device_id, first_seen, last_seen)
+                                VALUES (%s, %s, %s, NOW(), NOW())
+                                ON CONFLICT (install_id) DO UPDATE
+                                SET email = EXCLUDED.email,
+                                    device_id = EXCLUDED.device_id,
+                                    last_seen = NOW();
+                            """, (install_id, email_norm, device_id))
+
+                        # Bind code to this install and mark used
+                        cur.execute("""
+                            UPDATE dev_codes
+                            SET used = TRUE,
+                                used_at = NOW(),
+                                assigned_install_id = %s
+                            WHERE code = %s
+                        """, (install_id, code))
+
+                        # Persist tier for this install (override takes precedence in your UI)
+                        cur.execute("""
+                            INSERT INTO tier_overrides (install_id, tier, expires_at)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (install_id) DO UPDATE
+                            SET tier = EXCLUDED.tier,
+                                expires_at = EXCLUDED.expires_at
+                        """, (install_id, target_tier, expires_at))
+
+                        # If email present, keep legacy installs mapping aligned
+                        if email_norm:
+                            hashed_email = hashlib.sha256(email_norm.encode()).hexdigest()
+                            cur.execute("""
+                                INSERT INTO installs (hashed_email, install_id, tier)
+                                VALUES (%s, %s, %s)
+                                ON CONFLICT (hashed_email) DO UPDATE
+                                SET install_id = EXCLUDED.install_id,
+                                    tier = EXCLUDED.tier
+                            """, (hashed_email, install_id, target_tier))
+
+                # Flat top-level keys so the GUI can read it without envelope wrangling
+                return json_success({
+                    "valid": True,
+                    "tier": target_tier,
+                    "email": email_norm
+                }, 200)
+
             except Exception as e:
                 self.logger.error(f"Dev code validation error: {e}", exc_info=True, extra={"request_id": _reqid()})
                 return json_error("Server error. Launching in trial mode.", 500)
+
 
         # -------- Bridge status / mode --------
         @self.app.route('/bridge/status', methods=['GET', 'OPTIONS'])
