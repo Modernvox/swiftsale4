@@ -106,7 +106,8 @@ def show_avg_sell_rate(self, show_message=True):
     if not self.bidder_manager.show_start_time:
         if show_message:
             QMessageBox.warning(self, "Warning", "Please click 'Start Show' first.")
-        self.stats_label.setText("Average Sell Rate: N/A")
+        if hasattr(self, "stats_label"):
+            self.stats_label.setText("Average Sell Rate: N/A")
         self.log_info("Sell rate not available: Show not started")
         return
 
@@ -131,7 +132,8 @@ def show_avg_sell_rate(self, show_message=True):
         if show_message:
             QMessageBox.information(self, "Sell Rate", "No valid transactions yet.")
 
-    self.stats_label.setText(concise_text)
+    if hasattr(self, "stats_label"):
+        self.stats_label.setText(concise_text)
     self.log_info(f"Updated sell rate: {concise_text}")
 
 # ---------------------------------------------------------------------------
@@ -182,7 +184,7 @@ def on_username_changed(self):
     self._last_seen_username = current_username
 
 # ---------------------------------------------------------------------------
-# Developer code dialog
+# Developer code dialog (Stripe-free)
 # ---------------------------------------------------------------------------
 
 _OFFLINE_DEV_CODES = {
@@ -193,10 +195,10 @@ _OFFLINE_DEV_CODES = {
 }
 
 def _try_validate_via_cloud(self, code: str):
-    """Validate using CloudDatabaseManager if available."""
+    """Validate using CloudDatabaseManager if available. Should return dict or raise."""
     if getattr(self, "cloud_db", None):
         self.log_info("Validating dev code via cloud_db...")
-        return self.cloud_db.validate_dev_code(code)  # should raise on failure
+        return self.cloud_db.validate_dev_code(code)  # expected to raise on failure
     return None
 
 def _try_validate_via_flask(self, code: str):
@@ -218,7 +220,6 @@ def _try_validate_via_flask(self, code: str):
             r.raise_for_status()
         data = r.json() or {}
         if data.get("status") == "success" and data.get("valid"):
-            # Normalize a consistent shape
             return {
                 "tier": "Gold",            # dev treated as Gold by policy
                 "license_key": "DEV_MODE",
@@ -234,6 +235,81 @@ def _try_validate_via_flask(self, code: str):
     except Exception as e:
         self.log_error(f"Flask dev-code validation failed: {e}")
         raise
+
+def open_dev_code_dialog(self):
+    """
+    Prompt for a developer/promo code and activate without Stripe.
+    Priority: cloud_db → local Flask → offline codes.
+    """
+    code, ok = QInputDialog.getText(self, "Enter Promo/Dev Code", "Code:")
+    if not ok or not (code or "").strip():
+        return
+    code = code.strip()
+
+    result = None
+    # 1) Cloud
+    try:
+        res = _try_validate_via_cloud(self, code)
+        if res:
+            result = res
+    except Exception as e:
+        self.log_error(f"Cloud validation error: {e}")
+
+    # 2) Local Flask
+    if not result:
+        try:
+            res = _try_validate_via_flask(self, code)
+            if res:
+                result = res
+        except Exception as e:
+            self.log_error(f"Local validation error: {e}")
+
+    # 3) Offline fallback
+    if not result:
+        offline = _OFFLINE_DEV_CODES.get(code.lower())
+        if offline:
+            result = {
+                "tier": offline["tier"],
+                "license_key": offline["license_key"],
+                "email": getattr(self, "user_email", None)
+            }
+
+    if not result:
+        QMessageBox.warning(self, "Invalid Code", "That code is invalid or expired.")
+        return
+
+    # Apply activation
+    try:
+        new_tier = result.get("tier", "Gold")
+        self.tier = new_tier
+        self.license_key = result.get("license_key", "DEV_MODE")
+
+        # Persist locally
+        save_install_info(self.user_email, self.install_id, self.tier)
+
+        # Update local DB install record if available
+        try:
+            hashed_email = hashlib.sha256((self.user_email or "").encode()).hexdigest()
+            if hasattr(self, "bidder_manager") and hasattr(self.bidder_manager, "update_install"):
+                self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
+        except Exception as e:
+            self.log_error(f"Failed to update local install tier: {e}")
+
+        # Reflect in UI
+        if hasattr(self, "update_subscription_ui"):
+            self.update_subscription_ui()
+        if hasattr(self, "update_header_and_footer"):
+            self.update_header_and_footer()
+
+        try:
+            self.show_temporary_message(f"✔ License Verified – {self.tier} Tier")
+        except Exception:
+            pass
+
+        QMessageBox.information(self, "Success", f"Activation successful.\nTier: {self.tier}")
+    except Exception as e:
+        self.log_error(f"Activation apply failed: {e}")
+        QMessageBox.critical(self, "Error", f"Activation failed:\n{e}")
 
 # ---------------------------------------------------------------------------
 # Success Toast (1s fade-out)
@@ -508,8 +584,10 @@ def _poll_subscription_status(self, expected_tier, max_retries=6, delay=4):
                     self.bidder_manager.update_install(hashed_email, self.install_id, self.tier)
                 except Exception as e:
                     self.log_error(f"Failed to write updated tier locally: {e}")
-                self.update_subscription_ui()
-                self.update_header_and_footer()
+                if hasattr(self, "update_subscription_ui"):
+                    self.update_subscription_ui()
+                if hasattr(self, "update_header_and_footer"):
+                    self.update_header_and_footer()
                 break
         else:
             self.log_info("Tier change not detected during polling window.")

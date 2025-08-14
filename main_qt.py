@@ -348,8 +348,6 @@ def main():
     # Start Flask (Waitress) in background thread — pass stripe_service=None
     flask_server = FlaskServer(
         port=port,
-        stripe_service=None,                       # <<< no stripe
-        api_token=config.get("API_TOKEN", ""),     # keep if your /env-check expects it
         latest_bin_assignment_callback=latest_bin_callback,
         secret_key=config["SECRET_KEY"],
         log_info=log_info,
@@ -359,12 +357,13 @@ def main():
         telegram_service=telegram_service
     )
     threading.Thread(target=flask_server.start, daemon=True).start()
-    wait_for_server(f"http://localhost:{port}/health")
+    # Safer: wait for root (200) instead of /health unless you have that route
+    wait_for_server(f"http://localhost:{port}/")
 
-    # Build GUI — pass stripe_service=None
+    # Build GUI — keep backwards-compat args for existing SwiftSaleGUI.__init__
     gui = SwiftSaleGUI(
-        stripe_service=None,                       # <<< no stripe
-        api_token=config.get("API_TOKEN", ""),
+        
+        api_token="",  # legacy param to satisfy current SwiftSaleGUI signature
         user_email=user_email,
         base_url=config["APP_BASE_URL"],
         dev_unlock_code=config.get("DEV_UNLOCK_CODE", ""),
@@ -385,20 +384,7 @@ def main():
     ui_invoker = UiInvoker(parent=gui, log_err=log_error)
     gui.invoke_on_ui = lambda fn: ui_invoker.invoke.emit(fn)
 
-    # Socket.IO client (polling)
-    try:
-        gui.sio.on('connect', lambda: log_info("Socket.IO connected"))
-        gui.sio.on('disconnect', lambda: log_info("Socket.IO disconnected"))
-
-        def _on_winner(data):
-            username = (data or {}).get("username") or "unknown"
-            gui.invoke_on_ui(lambda: gui.show_temporary_message(f"Winner: {username}"))
-
-        gui.sio.on('winner', _on_winner)
-        gui.sio.connect(config["APP_BASE_URL"], transports=['polling'], wait_timeout=3)
-        log_info("Socket.IO client connected (polling)")
-    except Exception as e:
-        log_error(f"Socket.IO connect failed: {e}")
+    # (No extra Socket.IO connect here — GUI handles it in connect_socketio())
 
     # Optional cloud sync
     if cloud_db and user_email:

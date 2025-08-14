@@ -2,17 +2,21 @@ import os
 import hashlib
 import logging
 import requests
+import subprocess
+import sys
+
 from datetime import timedelta, datetime
+from gui_chatbot import AssistantDialog
 
 import socketio
 from PySide6.QtWidgets import (
     QMainWindow, QFrame, QLabel, QPushButton, QLineEdit, QCheckBox, QComboBox,
     QTextEdit, QTableWidget, QTreeWidgetItem, QScrollBar, QTabWidget, QVBoxLayout,
     QHBoxLayout, QGridLayout, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
-    QTextBrowser, QDialog, QApplication, QSizePolicy, QListWidget, QListWidgetItem
+    QTextBrowser, QDialog, QApplication, QSizePolicy, QListWidget, QListWidgetItem, QToolButton, QStyle
 )
-from PySide6.QtGui import QPixmap, QFont, QCursor, QClipboard, QKeySequence, QShortcut, QDesktopServices
-from PySide6.QtCore import Qt, QTimer, Signal, QUrl, QSettings
+from PySide6.QtGui import QPixmap, QFont, QCursor, QClipboard, QKeySequence, QShortcut, QDesktopServices, QIcon
+from PySide6.QtCore import Qt, QTimer, Signal, QUrl, QSettings, QSize   # ← added QSize
 
 from version import __version__
 from cloud_database_qt import CloudDatabaseManager
@@ -58,6 +62,92 @@ class AutoPasteLineEdit(QLineEdit):
 
 
 class SwiftSaleGUI(QMainWindow):
+    def _find_doubleclickcopy_path(self):
+        """
+        Locate helpers/DoubleClickCopy.exe in dev and frozen builds.
+        Returns absolute path or None.
+        """
+        candidates = []
+
+        # If bundled (PyInstaller build)
+        if getattr(sys, "frozen", False):
+            base = os.path.dirname(sys.executable)
+            candidates.append(os.path.join(base, "helpers", "DoubleClickCopy.exe"))
+
+        # Next to this file (dev mode)
+        here = os.path.dirname(__file__)
+        candidates.append(os.path.join(here, "helpers", "DoubleClickCopy.exe"))
+
+        # Project root (fallback)
+        candidates.append(os.path.join(os.getcwd(), "helpers", "DoubleClickCopy.exe"))
+
+        for p in candidates:
+            if os.path.isfile(p):
+                return os.path.abspath(p)
+
+        return None
+
+    def _is_process_running(self, image_name: str) -> bool:
+        """
+        Lightweight Windows check using tasklist (no extra deps).
+        Returns True if a process named image_name is running.
+        """
+        if sys.platform != "win32":
+            return False  # helper is Windows-only
+        try:
+            out = subprocess.check_output(
+                ['tasklist', '/FI', f'IMAGENAME eq {image_name}'],
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+            return image_name.encode('utf-8') in out
+        except Exception:
+            return False
+
+    def ensure_doubleclickcopy_running(self):
+        """
+        Start helpers/DoubleClickCopy.exe if not already running.
+        Records whether we started it so we can stop it on exit.
+        """
+        # Track per-run state (don’t clobber if already set)
+        if not hasattr(self, "_dcc_proc"):
+            self._dcc_proc = None
+        if not hasattr(self, "_dcc_started_by_app"):
+            self._dcc_started_by_app = False
+
+        if sys.platform != "win32":
+            self.log_info("DoubleClickCopy.exe is Windows-only; skipping start.")
+            return
+
+        exe_path = self._find_doubleclickcopy_path()
+        if not exe_path:
+            self.log_error("DoubleClickCopy.exe not found under helpers/ — skipping auto-launch.")
+            return
+
+        if self._is_process_running("DoubleClickCopy.exe"):
+            self.log_info("DoubleClickCopy.exe already running — leaving it running.")
+            return
+
+        try:
+            self._dcc_proc = subprocess.Popen(
+                [exe_path],
+                cwd=os.path.dirname(exe_path),
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+            self._dcc_started_by_app = True
+            self.log_info(f"Started helper: {exe_path}")
+        except Exception as e:
+            self.log_error(f"Failed to start DoubleClickCopy.exe: {e}")
+
+    def __init__(
+        self, api_token, user_email, base_url, dev_unlock_code,
+        telegram_bot_token, telegram_chat_id, dev_access_granted, log_info,
+        log_error, bidder_manager, bidders_db_path, subs_db_path
+    ):
+        super().__init__()
+
+        # ... keep the rest of your existing __init__ body unchanged ...
+
+
     def __init__(
         self, api_token, user_email, base_url, dev_unlock_code,
         telegram_bot_token, telegram_chat_id, dev_access_granted, log_info,
@@ -243,6 +333,47 @@ class SwiftSaleGUI(QMainWindow):
         self._init_status_bar()
         self.install_clipboard_capture()
 
+        # --- Assistant button (placed in HEADER bar, not status bar) ---
+        guide_path = os.path.join(os.path.dirname(__file__), "site", "guide.html")
+        self.assistant = AssistantDialog(self, parent=self, guide_path=guide_path)
+
+        self.chat_btn = QToolButton(self)
+        self.chat_btn.setToolTip("Assistant")
+        self.chat_btn.setAutoRaise(True)
+
+        try:
+            icon_path = get_resource_path("assets/ss_bot_icon.png")
+            if not os.path.exists(icon_path):
+                raise FileNotFoundError(f"Bot icon not found at {icon_path}")
+
+            pixmap = QPixmap(icon_path)
+            if pixmap.isNull():
+                raise FileNotFoundError(f"Bot icon failed to load: {icon_path}")
+
+            pixmap = pixmap.scaled(48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.chat_btn.setIcon(QIcon(pixmap))
+            self.chat_btn.setIconSize(QSize(48, 48))
+            self.chat_btn.setFixedSize(QSize(48, 48))
+            self.chat_btn.setStyleSheet("QToolButton { padding: 0px; margin: 0px; border: none; }")
+        except Exception as e:
+            self.log_error(f"Assistant icon error: {e}")
+            self.chat_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
+            # Ensure the button is still visible with a reasonable size
+            self.chat_btn.setIconSize(QSize(32, 32))
+            self.chat_btn.setFixedSize(QSize(36, 36))
+
+        self.chat_btn.clicked.connect(self.assistant.show)
+
+        if hasattr(self, "header_action_layout"):
+            self.header_action_layout.addWidget(self.chat_btn)
+            self.header_action_layout.setContentsMargins(0, 0, 0, 0)
+            self.header_action_layout.setSpacing(4)
+        else:
+            self.statusBar().addPermanentWidget(self.chat_btn)
+            self.log_error("header_action_layout not found; placed Assistant button in status bar.")
+        self.chat_btn.show()  # ← make sure it's visible
+        # --- end Assistant button ---
+
         # Setup connections and shortcuts
         self.setup_connections()
         self.setup_shortcuts()
@@ -253,6 +384,32 @@ class SwiftSaleGUI(QMainWindow):
 
         self.show()
         self.raise_()
+
+        # In case header_action_layout is constructed/adjusted late in some themes/layouts
+        self._attach_assistant_to_header()
+
+        self.ensure_doubleclickcopy_running()
+
+    def _attach_assistant_to_header(self):
+        """
+        Always attach the Assistant button to the header_action_layout.
+        Assumes setup_ui() has already created header_action_layout.
+        """
+        try:
+            if hasattr(self, "header_action_layout"):
+                # Avoid duplicates: remove if already present, then add
+                try:
+                    self.header_action_layout.removeWidget(self.chat_btn)
+                except Exception:
+                    pass
+                self.header_action_layout.addWidget(self.chat_btn)
+                self.chat_btn.setVisible(True)
+            else:
+                # Absolute fallback: put it in the status bar
+                self.statusBar().addPermanentWidget(self.chat_btn)
+                self.log_error("header_action_layout not found; placed Assistant button in status bar.")
+        except Exception as e:
+            self.log_error(f"Failed to attach Assistant button: {e}")
 
     def _build_shortcuts_html(self) -> str:
         return """
@@ -483,15 +640,38 @@ class SwiftSaleGUI(QMainWindow):
             self.clear_button.clicked.connect(self.clear_username)
 
     def closeEvent(self, event):
-        """Stop the timer and close database when closing the window."""
-        if self.timer.isActive():
-            self.timer.stop()
-        if self.sio.connected:
+        """Stop the timer, disconnect sockets, and close helper on exit."""
+        try:
+            if self.timer.isActive():
+                self.timer.stop()
+        except Exception:
+            pass
+
+        try:
+            if self.sio.connected:
+                try:
+                    self.sio.disconnect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Gracefully stop DoubleClickCopy if we launched it
+        if sys.platform == "win32":
             try:
-                self.sio.disconnect()
-            except Exception:
-                pass
-        # Stripe cleanup removed
+                if getattr(self, "_dcc_started_by_app", False) and getattr(self, "_dcc_proc", None):
+                    self._dcc_proc.terminate()
+                    try:
+                        self._dcc_proc.wait(timeout=2)
+                    except Exception:
+                        # Force kill if it didn't terminate
+                        subprocess.call(
+                            ['taskkill', '/F', '/IM', 'DoubleClickCopy.exe', '/T'],
+                            creationflags=0x08000000  # CREATE_NO_WINDOW
+                        )
+            except Exception as e:
+                self.log_error(f"Error stopping DoubleClickCopy.exe: {e}")
+
         event.accept()
 
     def auto_paste_username(self, event):
@@ -863,7 +1043,7 @@ class SwiftSaleGUI(QMainWindow):
 
         # Sticky winner apply
         QShortcut(QKeySequence("Ctrl+Shift+W"), self, self.apply_sticky_winner)
-
+     
         self.log_info("Keyboard shortcuts set up")
 
     # =========================
@@ -928,7 +1108,7 @@ class SwiftSaleGUI(QMainWindow):
                 self.bridge_mode = str(r.json().get("mode", new_mode))
                 self.qsettings.setValue("bridge/mode", self.bridge_mode)
                 self.qsettings.setValue("bridge/auto_capture", self.bridge_mode == "auto")
-                self.show_temporary_message(f"Capture mode: {self.bridge_mode.UPPER()}")
+                self.show_temporary_message(f"Capture mode: {self.bridge_mode.upper()}")
             else:
                 QMessageBox.warning(self, "Bridge", "Failed to change capture mode.")
         except Exception as e:

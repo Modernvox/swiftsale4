@@ -49,6 +49,13 @@ ANCHOR_KEYWORDS = [
     "shipping address:", "sold to:"
 ]
 
+def _norm_username(u):
+    """Normalize usernames for consistent DB lookups."""
+    try:
+        return str(u).strip().lower().lstrip('@')
+    except Exception:
+        return None
+
 def _group_words_into_lines(plumber_page, y_tol=2.0):
     """Group words into visual lines using vertical proximity."""
     words = plumber_page.extract_words(use_text_flow=True, keep_blank_chars=False)
@@ -310,50 +317,94 @@ def annotate_labels_qt(parent, db_path):
         QMessageBox.critical(parent, "Annotation Error", f"Failed to annotate PDF:\n\n{e}")
 
 # ------------------------------------------------------------
-# Core annotator
+# DB map loader (robust, normalized)
 # ------------------------------------------------------------
 def _load_bin_and_firstname_maps(bidders_db_path: str):
     """
     Load:
-      • bin_map: username(lower) -> bin_number
-      • fname_map: username(lower) -> first_name (latest non-null)
-    Both maps may be empty on error.
+      • bin_map: normalized username -> bin_number
+      • fname_map: normalized username -> first_name (latest non-null)
+    Falls back to latest non-null bin from bidders when bin_assignments is empty/missing.
+    Handles schemas where the column is named 'bin' or 'bin_number'.
     """
     bin_map, fname_map = {}, {}
     if not bidders_db_path or not os.path.exists(bidders_db_path):
         logger.warning("bidders_db_path missing or not found: %s", bidders_db_path)
         return bin_map, fname_map
 
+    def _table_has_cols(cur, table, *cols):
+        try:
+            cur.execute(f"PRAGMA table_info({table});")
+            names = {r[1].lower() for r in cur.fetchall()}
+            return all(c.lower() in names for c in cols)
+        except sqlite3.Error:
+            return False
+
     try:
         conn = sqlite3.connect(bidders_db_path)
         cur = conn.cursor()
 
-        # Bin assignments
-        cur.execute("SELECT username, bin_number FROM bin_assignments;")
-        for u, b in cur.fetchall():
-            if isinstance(u, str) and u.strip():
-                bin_map[u.strip().lower()] = b
+        # ---------- Primary: bin_assignments ----------
+        if _table_has_cols(cur, "bin_assignments", "username", "bin_number") or _table_has_cols(cur, "bin_assignments", "username", "bin"):
+            col = "bin_number" if _table_has_cols(cur, "bin_assignments", "bin_number") else "bin"
+            try:
+                cur.execute(f"SELECT username, {col} FROM bin_assignments;")
+                for u, b in cur.fetchall():
+                    nu = _norm_username(u)
+                    if nu and b is not None:
+                        bin_map[nu] = b
+            except sqlite3.Error:
+                pass
 
-        # First names (prefer most recent non-null per user)
-        try:
-            cur.execute("""
-                SELECT LOWER(username), first_name, timestamp
-                FROM bidders
-                WHERE first_name IS NOT NULL AND TRIM(first_name) <> ''
-                ORDER BY datetime(timestamp) DESC
-            """)
-            for u, first, _ in cur.fetchall():
-                if u and u not in fname_map:
-                    fname_map[u] = first.strip()
-        except sqlite3.Error:
-            # Older schemas may not have first_name
-            pass
+        # ---------- Fallback: latest non-null bin from bidders ----------
+        bidders_bin_col = None
+        if _table_has_cols(cur, "bidders", "bin_number"):
+            bidders_bin_col = "bin_number"
+        elif _table_has_cols(cur, "bidders", "bin"):
+            bidders_bin_col = "bin"
+        if bidders_bin_col and _table_has_cols(cur, "bidders", "username", "timestamp"):
+            try:
+                cur.execute(f"""
+                    SELECT LOWER(username), {bidders_bin_col}, timestamp
+                    FROM bidders
+                    WHERE {bidders_bin_col} IS NOT NULL
+                      AND TRIM(username) <> ''
+                    ORDER BY datetime(timestamp) DESC
+                """)
+                for u, b, _ in cur.fetchall():
+                    nu = _norm_username(u)
+                    if nu and b is not None and nu not in bin_map:
+                        bin_map[nu] = b
+            except sqlite3.Error:
+                pass
+
+        # ---------- First names (latest) ----------
+        if _table_has_cols(cur, "bidders", "username", "first_name", "timestamp"):
+            try:
+                cur.execute("""
+                    SELECT LOWER(username), first_name, timestamp
+                    FROM bidders
+                    WHERE first_name IS NOT NULL AND TRIM(first_name) <> ''
+                    ORDER BY datetime(timestamp) DESC
+                """)
+                for u, first, _ in cur.fetchall():
+                    nu = _norm_username(u)
+                    if nu and nu not in fname_map and isinstance(first, str):
+                        first = first.strip()
+                        if first:
+                            fname_map[nu] = first
+            except sqlite3.Error:
+                pass
 
         conn.close()
+        logger.info(f"[annotate] Loaded bins={len(bin_map)}, first_names={len(fname_map)}")
     except Exception as e:
         logger.warning(f"Failed to read bidders DB: {e}")
     return bin_map, fname_map
 
+# ------------------------------------------------------------
+# Core annotator
+# ------------------------------------------------------------
 def annotate_whatnot_pdf_with_bins_and_firstname(
     whatnot_pdf_path: str,
     bidders_db_path: str,
@@ -367,10 +418,15 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
     font_size_default: int = 12
 ) -> list:
     """
-    Read Whatnot packing labels and overlay SwiftSale Bin # (and pickup first name).
+    Read Whatnot packing labels and overlay SwiftSale Bin # and Buyer Name.
+    Guarantees that every LOCAL PICKUP label gets a buyer name + bin attempt,
+    even for giveaway / flash sale cases or when address parsing is incomplete.
+
+    NEW: If a page is unassigned (no bin) and contains "Givvy" or "Giveaway",
+         the placeholder will be "GIVEAWAY"; otherwise "FLASH SALE".
     Returns a list of (page_index, reason_or_username) for skipped overlays.
     """
-    # Preload maps
+    # Preload maps (now includes bidders-table fallback for bins)
     bin_map, fname_map = _load_bin_and_firstname_maps(bidders_db_path)
 
     mailing_list = MailingListManager()
@@ -403,6 +459,9 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                 is_packing_slip = "packing slip" in page_text_lower
                 is_new_label = is_pickup or is_packing_slip
 
+                # NEW: detect giveaway intent keywords
+                is_giveaway = ("givvy" in page_text_lower) or ("giveaway" in page_text_lower)
+
                 # Track money spent (best-effort)
                 try:
                     spent = float(extract_spent_amount(page_text) or 0.0)
@@ -410,7 +469,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                     spent = 0.0
 
                 if is_new_label:
-                    # Flush previous buyer to mailing list
+                    # Flush previous buyer to mailing list (only if we had address data)
                     if current_buyer and current_address_data:
                         mailing_entry = {
                             **current_address_data,
@@ -426,7 +485,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                                 logger.warning(f"Mailing list write failed: {e}")
                         current_spent_total = 0.0
 
-                    # Extract username + first-name from the block
+                    # Extract username + tentative first-name
                     try:
                         username, first_name_from_block = extract_username_and_pickup_firstname_from_page(plumber_page)
                         if not username:
@@ -435,81 +494,88 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                         username, first_name_from_block = (None, None)
 
                     if not username:
+                        # We still can't label anything meaningfully without a username
                         skipped_pages.append((page_index, "no_username"))
                         pdf_writer.add_page(original_page)
                         continue
 
+                    # Address is optional for pickup overlay — we won't skip a pickup just because address failed
                     address_data = parse_packing_slip_address(page_text) or {}
-                    if not address_data or not address_data.get("full_name") or not address_data.get("address_line_1"):
-                        skipped_pages.append((page_index, "no_address_data"))
-                        pdf_writer.add_page(original_page)
-                        continue
 
                     # Normalize city like "Area: Dallas"
                     city_val = address_data.get("city")
                     if city_val and isinstance(city_val, str) and city_val.lower().startswith("area:"):
                         address_data["city"] = city_val.split(":", 1)[-1].strip()
 
-                    current_buyer = username.lower().strip()
-                    label_counts[current_buyer] += 1
+                    current_buyer = username.strip().lower()
+                    nu = _norm_username(current_buyer)
+                    label_counts[nu or current_buyer] += 1
 
-                    # First name precedence: block -> DB -> full_name -> None
-                    current_first_name = first_name_from_block
-                    if not current_first_name:
-                        current_first_name = fname_map.get(current_buyer)
-                    if not current_first_name:
-                        full_name = address_data.get("full_name") or ""
-                        if full_name:
-                            current_first_name = full_name.split()[0]
+                    # Name precedence: FULL NAME (from address) → extracted first name → DB → username
+                    current_first_name = first_name_from_block or fname_map.get(nu or current_buyer)
+                    full_name = (address_data.get("full_name") or "").strip()
+                    buyer_display_name = full_name or current_first_name or (nu or current_buyer)
 
                     pickup_note = "PICK UP" if is_pickup else (address_data.get("address_line_2") or "")
-                    current_address_data = {
-                        "full_name": address_data["full_name"],
-                        "username": current_buyer,
-                        "email": "",
-                        "address_line_1": address_data["address_line_1"],
-                        "address_line_2": pickup_note,
-                        "city": address_data.get("city", ""),
-                        "state": address_data.get("state", ""),
-                        "zip_code": address_data.get("zip_code", "")
-                    }
+                    current_address_data = None
+                    if address_data.get("full_name") and address_data.get("address_line_1"):
+                        current_address_data = {
+                            "full_name": address_data["full_name"],
+                            "username": nu or current_buyer,
+                            "email": "",
+                            "address_line_1": address_data["address_line_1"],
+                            "address_line_2": pickup_note,
+                            "city": address_data.get("city", ""),
+                            "state": address_data.get("state", ""),
+                            "zip_code": address_data.get("zip_code", "")
+                        }
+
                     current_spent_total = spent
                 else:
                     if current_buyer:
                         current_spent_total += spent
+                    buyer_display_name = None  # unchanged on non-new pages
+                    nu = _norm_username(current_buyer) if current_buyer else None
+                    # is_giveaway is still valid for the page_text_lower of this page
 
-                # --- overlay ---
+                # --- overlay for this page ---
                 draw_overlay = is_new_label
-                bin_number = bin_map.get(current_buyer) if current_buyer else None
+                bin_number = bin_map.get(nu) if nu else None
+
+                # Debug lookup line (uncomment if needed)
+                # logger.info(f"[annotate] lookup user raw='{current_buyer}' norm='{nu}' bin='{bin_number}' is_pickup={is_pickup} is_giveaway={is_giveaway}")
 
                 if draw_overlay:
                     try:
                         packet = io.BytesIO()
                         can = canvas.Canvas(packet, pagesize=PAGE_SIZE)
 
-                        if bin_number:
-                            # "SwiftSale App Bin: #123"
-                            label_text = "SwiftSale App Bin:"
-                            can.setFont(font_name, font_size_app)
-                            can.drawString(stamp_x, stamp_y + font_size_first + 4, label_text)
+                        # 1) Always print Buyer Name on LOCAL PICKUP labels
+                        #    Use full name if available, else first name, else username.
+                        if is_pickup:
+                            name_to_print = buyer_display_name or (nu or current_buyer) or ""
+                            if name_to_print:
+                                can.setFont(font_name, font_size_first)
+                                # Prominent name stripe
+                                can.drawString(0.40 * inch, 4.72 * inch, f"****{name_to_print}****")
 
-                            label_width = can.stringWidth(label_text, font_name, font_size_app)
+                        # 2) Bin stamp — show real bin or the requested placeholders
+                        can.setFont(font_name, font_size_app)
+                        app_label = "SwiftSale App Bin:"
+                        can.drawString(stamp_x, stamp_y + font_size_first + 4, app_label)
+
+                        label_width = can.stringWidth(app_label, font_name, font_size_app)
+                        if bin_number:
                             can.setFont(font_name, font_size_bin + 16)
                             can.drawString(stamp_x + label_width + 22, stamp_y + font_size_first - 4, f"#{bin_number}")
-
-                            # Always print buyer first name on Local Pickup labels
-                            if is_pickup and current_first_name:
-                                can.setFont(font_name, font_size_first)
-                                can.drawString(0.40 * inch, 4.72 * inch, f"****{current_first_name}****")
                         else:
-                            # Unknown bin: leave a helpful hint on the label
-                            skipped_pages.append((page_index, current_buyer or "unknown"))
-                            can.setFont(font_name, font_size_app)
-                            app_label = "SwiftSale App:"
-                            can.drawString(stamp_x, stamp_y + font_size_first + 8, app_label)
-                            text_width = can.stringWidth(app_label, font_name, font_size_app)
+                            # Placeholder per new rules
+                            placeholder = "GIVEAWAY" if is_giveaway else "FLASH SALE"
                             can.setFont(font_name, font_size_default)
-                            can.drawString(stamp_x + text_width + 10, stamp_y + font_size_first + 4, "No bin (Givvy/Flash?)")
+                            can.drawString(stamp_x + label_width + 22, stamp_y + font_size_first, placeholder)
+                            # keep a trace for reporting if you want
+                            reason_tag = "giveaway_unassigned" if is_giveaway else "flash_unassigned"
+                            skipped_pages.append((page_index, reason_tag))
 
                         can.save()
                         packet.seek(0)
@@ -527,8 +593,8 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
 
                 pdf_writer.add_page(original_page)
 
-            # Final flush to mailing list for last buyer
-            if current_buyer and current_address_data and current_buyer not in saved_usernames:
+            # Final flush to mailing list for last buyer (only if we had address data)
+            if current_buyer and current_address_data and (nu or current_buyer) not in saved_usernames:
                 mailing_entry = {
                     **current_address_data,
                     "spent": round(current_spent_total, 2),
@@ -550,18 +616,25 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
         if duplicates:
             packet = io.BytesIO()
             c = canvas.Canvas(packet, pagesize=PAGE_SIZE)
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(0.5 * inch, 5.5 * inch, "Multiple Labels Detected for these Buyers/Bins")
 
-            y = 4.9 * inch
+            def _draw_header():
+                c.setFont("Helvetica-Bold", 14)
+                c.drawCentredString(LABEL_WIDTH / 2, 5.60 * inch, "Multiple Labels Detected")
+                c.setFont("Helvetica-Bold", 12)
+                c.drawCentredString(LABEL_WIDTH / 2, 5.35 * inch, "for these Buyers / Bin Numbers")
+
+            _draw_header()
+            y = 4.90 * inch
+
             for username, count in sorted(duplicates.items()):
-                bin_number = bin_map.get(username, "N/A")
+                bn = bin_map.get(_norm_username(username), "N/A")
                 c.setFont("Helvetica", 14)
-                c.drawString(0.5 * inch, y, f"{username} — Bin #{bin_number} (x{count})")
-                y -= 0.3 * inch
-                if y < 1.0 * inch:
+                c.drawString(0.50 * inch, y, f"{username} — Bin #{bn} (x{count})")
+                y -= 0.30 * inch
+                if y < 1.00 * inch:
                     c.showPage()
-                    y = 5.5 * inch
+                    _draw_header()
+                    y = 4.90 * inch
 
             c.save()
             packet.seek(0)
@@ -570,6 +643,7 @@ def annotate_whatnot_pdf_with_bins_and_firstname(
                 pdf_writer.add_page(page)
     except Exception as e:
         logger.warning(f"Failed to append duplicates summary: {e}")
+
 
     # Write output PDF
     try:
