@@ -415,7 +415,8 @@ class FlaskServer:
         # -------- Register install (cloud only) --------
         @self.app.route('/register-install', methods=['POST'])
         def register_install():
-            if os.getenv("RENDER", "").lower() != "true":
+            # Allow on Render or if explicitly running server mode
+            if os.getenv("RENDER", "").lower() != "true" and os.getenv("SERVER_MODE", "").lower() != "true":
                 return json_error("Install registration only available in cloud environment", 403)
 
             conn = get_db_connection()
@@ -425,32 +426,97 @@ class FlaskServer:
 
             try:
                 data = request.get_json(silent=True) or {}
-                email = data.get('email')
-                if not email:
-                    return json_error("Email is required", 400)
-                email = email.strip().lower()
-                if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-                    return json_error("Invalid email address", 400)
 
-                hashed_email = hashlib.sha256(email.encode()).hexdigest()
+                # Payload from client
+                raw_email   = (data.get('email') or DEFAULT_TRIAL_EMAIL).strip().lower()
+                install_id  = (data.get('install_id') or "").strip()
+                device_id   = (data.get('device_id') or "").strip()
+                app_version = (data.get('app_version') or "").strip()
+                os_name     = (data.get('os') or "").strip()
+                os_version  = (data.get('os_version') or "").strip()
+
+                if not install_id:
+                    return json_error("install_id is required", 400)
+
+                # Basic email hygiene; allow trial placeholder if not valid
+                if not re.match(r"[^@]+@[^@]+\.[^@]+", raw_email):
+                    raw_email = DEFAULT_TRIAL_EMAIL
+
+                hashed_email = hashlib.sha256(raw_email.encode()).hexdigest()
+
                 with conn.cursor() as cur:
-                    cur.execute("SELECT install_id, tier FROM installs WHERE hashed_email = %s", (hashed_email,))
-                    existing_install = cur.fetchone()
-                    if existing_install:
-                        self.logger.info(f"Existing install found for hashed_email: {hashed_email}", extra={"request_id": _reqid()})
-                        return json_success({"install_id": existing_install[0], "tier": existing_install[1]}, 200)
+                    # Ensure tables exist (idempotent)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS install_devices (
+                            install_id  TEXT PRIMARY KEY,
+                            email       TEXT NOT NULL,
+                            device_id   TEXT,
+                            app_version TEXT,
+                            os_name     TEXT,
+                            os_version  TEXT,
+                            first_seen  TIMESTAMPTZ DEFAULT NOW(),
+                            last_seen   TIMESTAMPTZ DEFAULT NOW()
+                        );
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS latest_install_by_email (
+                            email      TEXT PRIMARY KEY,
+                            install_id TEXT NOT NULL,
+                            last_seen  TIMESTAMPTZ DEFAULT NOW()
+                        );
+                    """)
+                    # Legacy table you were already using
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS installs (
+                            hashed_email TEXT PRIMARY KEY,
+                            install_id   TEXT NOT NULL,
+                            tier         TEXT NOT NULL DEFAULT 'Trial'
+                        );
+                    """)
 
-                    cur.execute("SELECT install_id FROM installs ORDER BY install_id DESC LIMIT 1")
-                    last_install = cur.fetchone()
-                    new_id = f"{int(last_install[0]) + 1:07d}" if last_install else "0000001"
-                    cur.execute(
-                        "INSERT INTO installs (hashed_email, install_id, tier) VALUES (%s, %s, %s)",
-                        (hashed_email, new_id, "free")
-                    )
-                    conn.commit()
+                    # Upsert the device row by install_id
+                    cur.execute("""
+                        INSERT INTO install_devices (install_id, email, device_id, app_version, os_name, os_version, first_seen, last_seen)
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                        ON CONFLICT (install_id) DO UPDATE
+                        SET email = EXCLUDED.email,
+                            device_id = EXCLUDED.device_id,
+                            app_version = EXCLUDED.app_version,
+                            os_name = EXCLUDED.os_name,
+                            os_version = EXCLUDED.os_version,
+                            last_seen = NOW();
+                    """, (install_id, raw_email, device_id, app_version, os_name, os_version))
 
-                self.logger.info(f"New install registered: {new_id} for hashed_email: {hashed_email}", extra={"request_id": _reqid()})
-                return json_success({"install_id": new_id, "tier": "free"}, 200)
+                    # Keep legacy "installs" table aligned (tier preserved if already set)
+                    cur.execute("""
+                        INSERT INTO installs (hashed_email, install_id, tier)
+                        VALUES (%s, %s, COALESCE(
+                            (SELECT tier FROM installs WHERE hashed_email = %s), 'Trial'
+                        ))
+                        ON CONFLICT (hashed_email) DO UPDATE
+                        SET install_id = EXCLUDED.install_id;
+                    """, (hashed_email, install_id, hashed_email))
+
+                    # Fast pointer: latest install per email
+                    cur.execute("""
+                        INSERT INTO latest_install_by_email (email, install_id, last_seen)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (email) DO UPDATE
+                        SET install_id = EXCLUDED.install_id,
+                            last_seen = NOW();
+                    """, (raw_email, install_id))
+
+                    # Return the tier we have for this email
+                    cur.execute("SELECT tier FROM installs WHERE hashed_email = %s", (hashed_email,))
+                    row = cur.fetchone()
+                    tier = row[0] if row else "Trial"
+
+                conn.commit()
+                self.logger.info(
+                    f"Upserted install {install_id} for {raw_email}",
+                    extra={"request_id": _reqid()}
+                )
+                return json_success({"install_id": install_id, "email": raw_email, "tier": tier}, 200)
 
             except Exception as e:
                 self.logger.error(f"Error registering install: {e}", exc_info=True, extra={"request_id": _reqid()})

@@ -10,6 +10,7 @@ import socket
 import threading
 import sqlite3
 import gc
+import platform
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QObject, Signal
 from dotenv import load_dotenv
@@ -21,6 +22,12 @@ from flask_server_qt import FlaskServer
 from gui_qt import SwiftSaleGUI
 # REMOVED: from stripe_service_qt import StripeService
 from config_qt import load_config, DEFAULT_TRIAL_EMAIL, get_or_create_install_info, save_install_info
+
+# Try to import app version; fall back if missing.
+try:
+    from version import __version__ as APP_VERSION
+except Exception:
+    APP_VERSION = "4.1.0"
 
 def _load_env_robust():
     paths = []
@@ -95,6 +102,29 @@ stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setLevel(logging.INFO)
 stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+
+# --------------------------------------------------
+# HTTP sync helper (NEW)
+# --------------------------------------------------
+def sync_install_to_cloud(api_base: str, api_token: str, *, email: str, install_id: str,
+                          device_id: str, app_version: str) -> None:
+    """Best-effort: upsert this install into cloud DB."""
+    try:
+        if not api_base:
+            return
+        payload = {
+            "email": (email or "").strip().lower(),
+            "install_id": install_id,     # stable per install (local)
+            "device_id": device_id,       # machine identifier
+            "app_version": app_version,
+            "os": platform.system(),
+            "os_version": platform.release(),
+        }
+        headers = {"Authorization": f"Bearer {api_token}"} if api_token else {}
+        requests.post(f"{api_base.rstrip('/')}/register-install", json=payload, headers=headers, timeout=8)
+    except Exception:
+        # Never block startup on network errors
+        pass
 
 # --------------------------------------------------
 # SQLite helpers
@@ -251,19 +281,46 @@ class UiInvoker(QObject):
 # --------------------------------------------------
 def main():
     log_info("Starting SwiftSale GUI")
+
+    # Local install info
     install_info = get_or_create_install_info()
-    user_email = install_info.get("email", "trial@swiftsaleapp.com")
-    device_id = install_info.get("install_id")
+    user_email = (install_info.get("email") or DEFAULT_TRIAL_EMAIL).strip().lower()
+    install_id = install_info.get("install_id") or ""
+    # Use a real machine identifier distinct from install_id
+    machine_id = os.environ.get("COMPUTERNAME") or platform.node() or "unknown-device"
+
+    # Choose cloud API base: prefer CLOUD_API_BASE, then APP_BASE_URL (env), else localhost
+    cloud_api_base = os.getenv("CLOUD_API_BASE") or os.getenv("APP_BASE_URL") or "http://localhost:5000"
+    api_token = os.getenv("API_TOKEN", "")
+
+    # Immediately upsert install in cloud (best-effort)
+    sync_install_to_cloud(
+        cloud_api_base, api_token,
+        email=user_email,
+        install_id=install_id,
+        device_id=machine_id,
+        app_version=APP_VERSION,
+    )
 
     # Prompt for real email if still using default trial email
-    if user_email == "trial@swiftsaleapp.com":
+    if user_email == DEFAULT_TRIAL_EMAIL:
         from PySide6.QtWidgets import QInputDialog, QMessageBox
         email, ok = QInputDialog.getText(None, "Enter Your Email", "Please enter your SwiftSale email:")
         if ok and email:
             user_email = email.strip().lower()
             install_info["email"] = user_email
-            save_install_info(user_email, install_info.get("install_id"), install_info.get("tier"))
+            save_install_info(user_email, install_id, install_info.get("tier"))
+
             log_info(f"User email set to: {user_email}")
+
+            # Re-sync after email is set
+            sync_install_to_cloud(
+                cloud_api_base, api_token,
+                email=user_email,
+                install_id=install_id,
+                device_id=machine_id,
+                app_version=APP_VERSION,
+            )
 
             # Optional: device limit (cloud only)
             try:
@@ -276,12 +333,13 @@ def main():
 
                     with cloud_db_tmp.pool.connection() as conn:
                         with conn.cursor() as cur:
+                            # NOTE: here we use 'machine_id' as the device_id (not install_id)
                             cur.execute("""
                                 SELECT 1 FROM install_devices
                                 WHERE hashed_email = %s AND device_id = %s
-                            """, (hashed_email, device_id))
+                            """, (hashed_email, machine_id))
                             if cur.fetchone():
-                                log_info(f"Device {device_id} already registered for {user_email}")
+                                log_info(f"Device {machine_id} already registered for {user_email}")
                             else:
                                 cur.execute("""
                                     SELECT COUNT(*) FROM install_devices
@@ -292,8 +350,8 @@ def main():
                                     cur.execute("""
                                         INSERT INTO install_devices (raw_email, hashed_email, device_id)
                                         VALUES (%s, %s, %s)
-                                    """, (user_email, hashed_email, device_id))
-                                    log_info(f"Registered device {device_id} for {user_email}")
+                                    """, (user_email, hashed_email, machine_id))
+                                    log_info(f"Registered device {machine_id} for {user_email}")
                                 else:
                                     QMessageBox.critical(None, "Access Denied", f"{user_email} is already signed in on 2 devices.")
                                     sys.exit(1)
@@ -362,7 +420,6 @@ def main():
 
     # Build GUI — keep backwards-compat args for existing SwiftSaleGUI.__init__
     gui = SwiftSaleGUI(
-        
         api_token="",  # legacy param to satisfy current SwiftSaleGUI signature
         user_email=user_email,
         base_url=config["APP_BASE_URL"],
@@ -386,13 +443,13 @@ def main():
 
     # (No extra Socket.IO connect here — GUI handles it in connect_socketio())
 
-    # Optional cloud sync
+    # Optional cloud sync (tiers/subs)
     if cloud_db and user_email:
         try:
             cloud_db.sync_with_local(bidder_manager, user_email)
             tier = bidder_manager.get_tier_for_user(user_email)
             install_info["tier"] = tier
-            save_install_info(user_email, install_info.get("install_id"), tier)
+            save_install_info(user_email, install_id, tier)
             log_info(f"[SYNC] Synced and saved cloud tier '{tier}' for {user_email}")
             try:
                 gui.invoke_on_ui(lambda: gui.show_temporary_message(f"✔ License Verified – {tier} Tier"))
