@@ -10,6 +10,8 @@ from typing import Optional, Dict, List, Tuple
 from collections import deque
 from datetime import datetime
 from config_qt import DEFAULT_DATA_DIR
+from utils_qt import safe_default_csv_path, sanitize_filename
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -462,95 +464,143 @@ class BidderManager:
             logger.error(f"Failed to retrieve latest bidder: {e}")
             return None
 
-    def export_csv(self):
-        """Export all transactions to a CSV file."""
-        headers = [
-            'username', 'original_username', 'quantity', 'weight', 'is_giveaway',
-            'bin_number', 'giveaway_number', 'timestamp', 'last_assigned'
-        ]
+    _INVALID = r'[<>:"/\\|?*\x00-\x1F]'
+
+    def export_csv(self, out_path: str | None = None) -> str:
+        import os, csv, sqlite3
+
+        if not out_path:
+            out_path = safe_default_csv_path("bidders_export")
+        else:
+            dirpath = os.path.dirname(out_path) or os.getcwd()
+            basename = sanitize_filename(os.path.basename(out_path), default_ext=".csv")
+            out_path = os.path.join(dirpath, basename)
+            os.makedirs(dirpath, exist_ok=True)
+
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-            file_path = os.path.join(os.path.dirname(self.bidders_db_path), f"bidders_export_{timestamp}.csv")
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT username, original_username, quantity, weight, is_giveaway, bin_number, giveaway_number, timestamp, last_assigned
-                FROM bidders
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT username, bin_number
+                FROM bin_assignments
+                ORDER BY bin_number ASC
             """)
-            rows = cursor.fetchall()
-            with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=headers, quoting=csv.QUOTE_MINIMAL)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow(dict(zip(headers, row)))
-            logger.info("Exported bidders CSV to: %s", file_path)
-            return file_path
-        except (sqlite3.Error, OSError) as e:
-            logger.error("CSV export failed: %s", e)
-            raise
+            rows = cur.fetchall()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"DB read failed: {e}") from e
+
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["username", "bin_number"])
+            w.writerows(rows)
+
+        return out_path
+
 
     def import_csv(self, file_path):
-        """Import bidder data from a CSV."""
+        """Import bidder data from a CSV (lenient: quantity optional, supports exported CSV)."""
+        import csv, os, sqlite3
+        from datetime import datetime
+
+        if not file_path or not os.path.exists(file_path):
+            raise FileNotFoundError(f"CSV file not found: {file_path}")
+
         try:
             with open(file_path, newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 if not reader.fieldnames:
                     logger.error("CSV file has no headers")
                     raise ValueError("CSV file must contain headers")
-                header_map = {
-                    'username': ['username', 'user', 'name'],
-                    'original_username': ['original_username', 'display_name', 'original_name'],
-                    'quantity': ['quantity', 'qty', 'count']
-                }
-                field_mapping = {}
-                fieldnames_lower = [f.lower() for f in reader.fieldnames]
-                for standard, aliases in header_map.items():
-                    for alias in aliases:
-                        if alias.lower() in fieldnames_lower:
-                            idx = fieldnames_lower.index(alias.lower())
-                            field_mapping[standard] = reader.fieldnames[idx]
-                            break
-                    if standard == 'username' and standard not in field_mapping:
-                        raise ValueError(f"CSV must contain a header for username (e.g., {', '.join(aliases)})")
-                    if standard == 'quantity' and standard not in field_mapping:
-                        raise ValueError(f"CSV must contain a header for quantity (e.g., {', '.join(aliases)})")
-                    if standard == 'original_username' and standard not in field_mapping:
-                        field_mapping['original_username'] = field_mapping.get('username', 'username')
+
+                # Build a lowercase header lookup
+                fieldnames = reader.fieldnames
+                fieldnames_lc = [h.lower() for h in fieldnames]
+                idx_of = {h.lower(): i for i, h in enumerate(fieldnames)}
+
+                # Helper to find the actual column name for any of the aliases
+                def find_col(aliases):
+                    for a in aliases:
+                        j = idx_of.get(a.lower())
+                        if j is not None:
+                            return fieldnames[j]
+                    return None
+
+                # Header alias map (username required; quantity optional)
+                user_col   = find_col(['username', 'user', 'name', 'handle'])
+                qty_col    = find_col(['quantity', 'qty', 'count', 'q'])  # optional
+                orig_col   = find_col(['original_username', 'display_name', 'original_name'])  # optional
+                wt_col     = find_col(['weight', 'oz', 'ounces', 'grams', 'g'])  # optional
+                bin_col    = find_col(['bin_number', 'bin', 'number'])  # optional
+                gnum_col   = find_col(['giveaway_number', 'giveaway', 'gnum'])  # optional
+                ts_col     = find_col(['timestamp', 'time'])  # optional
+                last_col   = find_col(['last_assigned', 'last'])  # optional
+                ig_col     = find_col(['is_giveaway'])  # optional
+
+                if not user_col:
+                    raise ValueError("CSV must contain a header for username (e.g., username, user, name)")
 
                 cursor = self.conn.cursor()
                 self.bidders.clear()
                 self.bin_counter = 0
                 self.giveaway_counter = 0
+
                 for row_num, row in enumerate(reader, start=2):
                     try:
-                        uname = self._normalize_username(row[field_mapping['username']])
+                        raw_user = (row.get(user_col) or "").strip()
+                        uname = self._normalize_username(raw_user)
                         if not uname:
                             logger.warning("Skipping row %d: Missing username", row_num)
                             continue
-                        orig_uname = row.get(field_mapping['original_username'], uname).strip()
+
+                        orig_uname = (row.get(orig_col) or raw_user).strip() if orig_col else raw_user
+
+                        # quantity defaults to 1 if missing/invalid
+                        raw_qty = (row.get(qty_col) or "").strip() if qty_col else ""
                         try:
-                            qty = int(row[field_mapping['quantity']])
+                            qty = int(raw_qty) if raw_qty else 1
                             if qty < 0:
-                                logger.warning("Skipping row %d: Negative quantity (%s)", row_num, row[field_mapping['quantity']])
+                                logger.warning("Skipping row %d: Negative quantity (%s)", row_num, raw_qty)
                                 continue
                         except ValueError:
-                            logger.warning("Skipping row %d: Invalid quantity (%s)", row_num, row[field_mapping['quantity']])
-                            continue
-                        weight = row.get('weight', None)
+                            logger.warning("Row %d: Invalid quantity (%s) -> using 1", row_num, raw_qty)
+                            qty = 1
+
+                        weight = (row.get(wt_col) or "").strip() if wt_col else None
+                        weight = weight or None
+
+                        # is_giveaway (optional)
                         try:
-                            is_giveaway = int(row.get('is_giveaway', 0))
+                            is_giveaway = int((row.get(ig_col) or "0").strip()) if ig_col else 0
                         except ValueError:
                             is_giveaway = 0
-                        try:
-                            bin_num = int(row['bin_number']) if 'bin_number' in row and row['bin_number'] else None
-                        except ValueError:
-                            bin_num = None
-                        try:
-                            giveaway_num = int(row['giveaway_number']) if row.get('giveaway_number') else None
-                        except ValueError:
-                            giveaway_num = None
-                        timestamp = row.get('timestamp') or datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                        last_assigned = row.get('last_assigned', timestamp)
+
+                        # bin_number (optional)
+                        bin_num = None
+                        if bin_col:
+                            raw_bin = (row.get(bin_col) or "").strip()
+                            if raw_bin:
+                                try:
+                                    bin_num = int(raw_bin)
+                                except ValueError:
+                                    bin_num = None
+
+                        # giveaway_number (optional)
+                        giveaway_num = None
+                        if gnum_col:
+                            raw_gnum = (row.get(gnum_col) or "").strip()
+                            if raw_gnum:
+                                try:
+                                    giveaway_num = int(raw_gnum)
+                                except ValueError:
+                                    giveaway_num = None
+
+                        timestamp = (row.get(ts_col) or "").strip() if ts_col else ""
+                        if not timestamp:
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                        last_assigned = (row.get(last_col) or "").strip() if last_col else timestamp
+                        if not last_assigned:
+                            last_assigned = timestamp
+
+                        # Maintain your existing counters/records if bin/giveaway present
                         if bin_num:
                             cursor.execute("""
                                 INSERT OR REPLACE INTO bin_assignments (username, bin_number)
@@ -559,10 +609,13 @@ class BidderManager:
                             self.bin_counter = max(self.bin_counter, bin_num)
                         if giveaway_num:
                             self.giveaway_counter = max(self.giveaway_counter, giveaway_num)
+
+                        # Insert the row into bidders table (as your existing code does)
                         cursor.execute("""
                             INSERT INTO bidders (username, original_username, quantity, weight, is_giveaway, bin_number, giveaway_number, timestamp, last_assigned)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (uname, orig_uname, qty, weight, is_giveaway, bin_num, giveaway_num, timestamp, last_assigned))
+
                         if uname not in self.bidders:
                             self.bidders[uname] = {
                                 "original_username": orig_uname,
@@ -580,6 +633,7 @@ class BidderManager:
                     except Exception as e:
                         logger.error("Failed to process row %d: %s", row_num, e)
                         continue
+
                 self.conn.commit()
                 logger.info("Imported CSV to bidders.db successfully: %s", file_path)
         except (OSError, ValueError, sqlite3.Error) as e:

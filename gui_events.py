@@ -20,6 +20,7 @@ import re
 import os
 import webbrowser
 
+
 from PySide6.QtCore import Qt, QTimer, QEasingCurve, QRect, QPropertyAnimation
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -44,8 +45,10 @@ from gui_help_qt import (
     show_clear_bidders_help,
     show_top_buyer_help,
     show_flash_sale_text_help,
+    
 )
 
+from utils_qt import safe_default_csv_path, sanitize_filename
 # ---------------------------------------------------------------------------
 # Payment links (Stripe-free)
 # ---------------------------------------------------------------------------
@@ -515,43 +518,31 @@ def _resolve_bin_for_username(self, username: str):
                 pass
     return getattr(self, "_last_assigned_bin", None)
 
-_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
+def export_bidders_csv(self, _checked=False):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    import os
 
-def _safe_default_csv_path(stem: str = "bidders_export") -> str:
-    base_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
-    os.makedirs(base_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")   # Windows-safe timestamp
-    # No forbidden chars, no trailing dot/space
-    safe = re.sub(_INVALID, "_", f"{stem}_{ts}").rstrip(" .")
-    return os.path.join(base_dir, safe + ".csv")
-
-def export_bidders_csv(self):
-    """Export bidders to CSV (direct write, Windows-safe name)."""
-    suggested = _safe_default_csv_path("bidders_export")
+    suggested = safe_default_csv_path("bidders_export")
     file_name, _ = QFileDialog.getSaveFileName(
-        self,
-        "Export CSV",
-        suggested,
-        "CSV Files (*.csv)"
+        self, "Export CSV", suggested, "CSV Files (*.csv)"
     )
     if not file_name:
         return
-    if not file_name.lower().endswith(".csv"):
-        file_name += ".csv"
+
+    # sanitize and normalize the chosen path
+    dirpath = os.path.dirname(file_name) or os.getcwd()
+    basename = sanitize_filename(os.path.basename(file_name), default_ext=".csv")
+    normalized_path = os.path.join(dirpath, basename)
 
     try:
-        self.bidder_manager.export_csv(file_name)  # writes directly
-        try:
-            self.log_info(f"Exported bidders to {file_name}")
-        except Exception:
-            pass
+        self.bidder_manager.export_csv(normalized_path)
+        self.log_info(f"Exported bidders to {normalized_path}")
         QMessageBox.information(self, "Success", "Bidders exported successfully")
     except Exception as e:
-        try:
-            self.log_error(f"Failed to export CSV: {e}")
-        except Exception:
-            pass
+        self.log_error(f"Failed to export CSV: {e}")
         QMessageBox.critical(self, "Error", f"Failed to export CSV: {e}")
+
+
 
 # ---------------------------------------------------------------------------
 # Upgrade flow (Stripe-free)
@@ -686,7 +677,6 @@ def bind_event_methods(gui):
     gui._on_clipboard_change = _on_clipboard_change.__get__(gui, gui.__class__)
     gui._poll_clipboard = _poll_clipboard.__get__(gui, gui.__class__)
     gui._maybe_submit_username = _maybe_submit_username.__get__(gui, gui.__class__)
-    # Export CSV
     gui.export_bidders_csv = export_bidders_csv.__get__(gui, gui.__class__)
     # Hook up if present (safe if widgets/actions don’t exist)
     for attr in ("btn_export_csv", "button_export_csv", "export_csv_button"):

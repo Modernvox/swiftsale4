@@ -617,7 +617,8 @@ class SwiftSaleGUI(QMainWindow):
         if hasattr(self, "import_csv_button"):
             self.import_csv_button.clicked.connect(self.import_csv)
         if hasattr(self, "export_csv_button"):
-            self.export_csv_button.clicked.connect(self.export_csv)
+            self.export_csv_button.clicked.disconnect() if hasattr(self.export_csv_button, "clicked") else None
+            self.export_csv_button.clicked.connect(self.export_bidders_csv)
         if hasattr(self, "toggle_tabs_btn"):
             self.toggle_tabs_btn.clicked.connect(self.toggle_settings_tabs)
         if hasattr(self, "update_btn"):

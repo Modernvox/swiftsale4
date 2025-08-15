@@ -1,6 +1,40 @@
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+# utils_qt.py
+from PySide6.QtWidgets import (
+    QWidget, QLabel, QHBoxLayout, QGraphicsOpacityEffect
+)
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QPixmap, QFont, QCursor
+from PySide6.QtGui import QPixmap, QFont, QCursor  # noqa: F401 (QCursor kept if you use later)
+
+# Windows-invalid filename characters + control chars
+_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
+
+def sanitize_filename(name: str, *, default_ext: str = ".csv") -> str:
+    """
+    Replace Windows-invalid chars and trim trailing spaces/dots.
+    Ensures file has `default_ext` if none is present.
+    """
+    import re, os
+    name = re.sub(_INVALID, "_", (name or "")).rstrip(" .")
+    root, ext = os.path.splitext(name)
+    if not ext:
+        name = root + default_ext
+    return name
+
+def safe_default_csv_path(stem: str = "bidders_export") -> str:
+    """
+    Build a Windows-safe default CSV path in %LOCALAPPDATA%/SwiftSaleApp.
+    """
+    import os
+    from datetime import datetime
+
+    base_dir = os.path.join(
+        os.getenv("LOCALAPPDATA", os.path.expanduser("~")),
+        "SwiftSaleApp"
+    )
+    os.makedirs(base_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # NO colons/spaces
+    filename = sanitize_filename(f"{stem}_{ts}.csv")
+    return os.path.join(base_dir, filename)
 
 def show_toast(parent, message: str, duration=3000, icon_path=None):
     """Show a temporary toast message over the parent window with optional icon."""

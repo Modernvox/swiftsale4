@@ -160,33 +160,6 @@ def import_csv(self):
         QMessageBox.critical(self, "Error", f"Failed to import CSV: {e}")
 
 
-def export_csv(self, out_path: str) -> str:
-    """
-    Write bidders to CSV directly at out_path.
-    Adjust the query/headers to match your schema.
-    """
-    import csv, os, sqlite3
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-    try:
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT username, bin_number
-            FROM bin_assignments
-            ORDER BY bin_number ASC
-        """)
-        rows = cur.fetchall()
-    except sqlite3.Error as e:
-        raise RuntimeError(f"DB read failed: {e}") from e
-
-    headers = ["username", "bin_number"]
-
-    with open(out_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(headers)
-        writer.writerows(rows)
-
-    return out_path
 
 # -------------------------------------------------------------------
 # NEW: Auto-capture entry point (call this from your extension/SIO listener)
@@ -326,6 +299,5 @@ def bind_bidders_methods(gui):
     gui.add_bidder = add_bidder.__get__(gui, gui.__class__)
     gui.clear_bidders = clear_bidders.__get__(gui, gui.__class__)
     gui.import_csv = import_csv.__get__(gui, gui.__class__)
-    gui.export_csv = export_csv.__get__(gui, gui.__class__)
     # new entry point for auto-capture integrations
     gui.add_bidder_from_capture = add_bidder_from_capture.__get__(gui, gui.__class__)
