@@ -160,20 +160,33 @@ def import_csv(self):
         QMessageBox.critical(self, "Error", f"Failed to import CSV: {e}")
 
 
-def export_csv(self):
-    """Export bidders to a CSV file."""
-    file_name, _ = QFileDialog.getSaveFileName(self, "Export CSV", "", "CSV Files (*.csv)")
-    if not file_name:
-        return
-    try:
-        file_path = self.bidder_manager.export_csv()
-        shutil.move(file_path, file_name)
-        self.log_info(f"Exported bidders to {file_name}")
-        QMessageBox.information(self, "Success", "Bidders exported successfully")
-    except Exception as e:
-        self.log_error(f"Failed to export CSV: {e}")
-        QMessageBox.critical(self, "Error", f"Failed to export CSV: {e}")
+def export_csv(self, out_path: str) -> str:
+    """
+    Write bidders to CSV directly at out_path.
+    Adjust the query/headers to match your schema.
+    """
+    import csv, os, sqlite3
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
+    try:
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT username, bin_number
+            FROM bin_assignments
+            ORDER BY bin_number ASC
+        """)
+        rows = cur.fetchall()
+    except sqlite3.Error as e:
+        raise RuntimeError(f"DB read failed: {e}") from e
+
+    headers = ["username", "bin_number"]
+
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+    return out_path
 
 # -------------------------------------------------------------------
 # NEW: Auto-capture entry point (call this from your extension/SIO listener)

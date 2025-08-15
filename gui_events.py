@@ -25,7 +25,7 @@ from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMessageBox, QApplication, QInputDialog,
     QCheckBox, QWidget, QFrame, QHBoxLayout, QLabel,
-    QGraphicsOpacityEffect,
+    QGraphicsOpacityEffect, QFileDialog
 )
 
 try:
@@ -515,6 +515,44 @@ def _resolve_bin_for_username(self, username: str):
                 pass
     return getattr(self, "_last_assigned_bin", None)
 
+_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
+
+def _safe_default_csv_path(stem: str = "bidders_export") -> str:
+    base_dir = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser("~")), 'SwiftSaleApp')
+    os.makedirs(base_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")   # Windows-safe timestamp
+    # No forbidden chars, no trailing dot/space
+    safe = re.sub(_INVALID, "_", f"{stem}_{ts}").rstrip(" .")
+    return os.path.join(base_dir, safe + ".csv")
+
+def export_bidders_csv(self):
+    """Export bidders to CSV (direct write, Windows-safe name)."""
+    suggested = _safe_default_csv_path("bidders_export")
+    file_name, _ = QFileDialog.getSaveFileName(
+        self,
+        "Export CSV",
+        suggested,
+        "CSV Files (*.csv)"
+    )
+    if not file_name:
+        return
+    if not file_name.lower().endswith(".csv"):
+        file_name += ".csv"
+
+    try:
+        self.bidder_manager.export_csv(file_name)  # writes directly
+        try:
+            self.log_info(f"Exported bidders to {file_name}")
+        except Exception:
+            pass
+        QMessageBox.information(self, "Success", "Bidders exported successfully")
+    except Exception as e:
+        try:
+            self.log_error(f"Failed to export CSV: {e}")
+        except Exception:
+            pass
+        QMessageBox.critical(self, "Error", f"Failed to export CSV: {e}")
+
 # ---------------------------------------------------------------------------
 # Upgrade flow (Stripe-free)
 # ---------------------------------------------------------------------------
@@ -648,6 +686,20 @@ def bind_event_methods(gui):
     gui._on_clipboard_change = _on_clipboard_change.__get__(gui, gui.__class__)
     gui._poll_clipboard = _poll_clipboard.__get__(gui, gui.__class__)
     gui._maybe_submit_username = _maybe_submit_username.__get__(gui, gui.__class__)
+    # Export CSV
+    gui.export_bidders_csv = export_bidders_csv.__get__(gui, gui.__class__)
+    # Hook up if present (safe if widgets/actions don’t exist)
+    for attr in ("btn_export_csv", "button_export_csv", "export_csv_button"):
+        try:
+            getattr(gui, attr).clicked.connect(gui.export_bidders_csv)
+        except Exception:
+            pass
+    for attr in ("actionExportCSV", "action_export_csv"):
+        try:
+            getattr(gui, attr).triggered.connect(gui.export_bidders_csv)
+        except Exception:
+            pass
+
 
 def bind_help_methods(gui):
     """Bind help button click events to their respective help functions."""
