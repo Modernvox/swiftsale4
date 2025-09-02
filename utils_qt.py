@@ -1,19 +1,30 @@
-# utils_qt.py
-from PySide6.QtWidgets import (
-    QWidget, QLabel, QHBoxLayout, QGraphicsOpacityEffect
-)
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QPixmap, QFont, QCursor  # noqa: F401 (QCursor kept if you use later)
+# utils_qt.py  — headless-safe utilities
+# Pure-Python helpers are import-safe on servers. GUI (Qt) bits are lazy-imported.
+
+from __future__ import annotations
+
+import os
+import re
+import logging
+from pathlib import Path
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # Windows-invalid filename characters + control chars
 _INVALID = r'[<>:"/\\|?*\x00-\x1F]'
+
+__all__ = [
+    "sanitize_filename",
+    "safe_default_csv_path",
+    "show_toast",
+]
 
 def sanitize_filename(name: str, *, default_ext: str = ".csv") -> str:
     """
     Replace Windows-invalid chars and trim trailing spaces/dots.
     Ensures file has `default_ext` if none is present.
     """
-    import re, os
     name = re.sub(_INVALID, "_", (name or "")).rstrip(" .")
     root, ext = os.path.splitext(name)
     if not ext:
@@ -24,9 +35,6 @@ def safe_default_csv_path(stem: str = "bidders_export") -> str:
     """
     Build a Windows-safe default CSV path in %LOCALAPPDATA%/SwiftSaleApp.
     """
-    import os
-    from datetime import datetime
-
     base_dir = os.path.join(
         os.getenv("LOCALAPPDATA", os.path.expanduser("~")),
         "SwiftSaleApp"
@@ -36,8 +44,57 @@ def safe_default_csv_path(stem: str = "bidders_export") -> str:
     filename = sanitize_filename(f"{stem}_{ts}.csv")
     return os.path.join(base_dir, filename)
 
-def show_toast(parent, message: str, duration=3000, icon_path=None):
-    """Show a temporary toast message over the parent window with optional icon."""
+def _import_qt():
+    """
+    Lazy-import the Qt pieces only when needed. If unavailable (e.g., on Render),
+    return None and callers can no-op gracefully.
+    """
+    # Optional kill-switch for headless environments
+    if os.getenv("HEADLESS", "").lower() in {"1", "true", "yes", "on"}:
+        return None
+
+    try:
+        from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QGraphicsOpacityEffect
+        from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+        from PySide6.QtGui import QPixmap, QFont
+        return {
+            "QWidget": QWidget,
+            "QLabel": QLabel,
+            "QHBoxLayout": QHBoxLayout,
+            "QGraphicsOpacityEffect": QGraphicsOpacityEffect,
+            "Qt": Qt,
+            "QTimer": QTimer,
+            "QPropertyAnimation": QPropertyAnimation,
+            "QEasingCurve": QEasingCurve,
+            "QPixmap": QPixmap,
+            "QFont": QFont,
+        }
+    except Exception as e:
+        # Don’t crash on servers — just log once and let GUI calls no-op.
+        logger.debug("Qt not available for show_toast (this is fine on servers): %s", e)
+        return None
+
+def show_toast(parent, message: str, duration: int = 3000, icon_path: str | None = None):
+    """
+    Show a temporary toast message over the parent window with optional icon.
+    - If Qt is unavailable (e.g., headless server), this is a no-op.
+    """
+    qt = _import_qt()
+    if not qt:
+        # No-op in headless environments
+        return
+
+    QWidget = qt["QWidget"]
+    QLabel = qt["QLabel"]
+    QHBoxLayout = qt["QHBoxLayout"]
+    QGraphicsOpacityEffect = qt["QGraphicsOpacityEffect"]
+    Qt = qt["Qt"]
+    QTimer = qt["QTimer"]
+    QPropertyAnimation = qt["QPropertyAnimation"]
+    QEasingCurve = qt["QEasingCurve"]
+    QPixmap = qt["QPixmap"]
+    QFont = qt["QFont"]
+
     toast = QWidget(parent)
     layout = QHBoxLayout()
     layout.setContentsMargins(12, 10, 12, 10)
@@ -66,8 +123,14 @@ def show_toast(parent, message: str, duration=3000, icon_path=None):
     toast.adjustSize()
     width = toast.width()
     height = toast.height()
-    parent_center_x = parent.geometry().center().x()
-    toast.move(parent_center_x - width // 2, parent.height() - height - 80)
+    try:
+        parent_center_x = parent.geometry().center().x()
+        x = parent_center_x - width // 2
+        y = parent.height() - height - 80
+        toast.move(x, y)
+    except Exception:
+        # If parent has no geometry yet, just show without positioning
+        pass
 
     opacity = QGraphicsOpacityEffect()
     toast.setGraphicsEffect(opacity)
